@@ -146,7 +146,7 @@ export class Bot {
   private stepDist = 0
   // Death presentation (driven from render).
   private dyingT = -1
-  private lastRender = 0
+  private readonly animArgs = [0, 0, 0, 0, 0]
   private lastHeadshot = false
   private readonly deathFrom = new THREE.Vector3()
 
@@ -328,7 +328,6 @@ export class Bot {
     const lz = away.x * Math.sin(this.yaw) + away.z * Math.cos(this.yaw)
     this.anim.die(lx, lz, this.lastHeadshot)
     this.dyingT = 0
-    this.lastRender = performance.now()
     this.deathFrom.copy(from)
     const gibAll = power > 1.4 || this.heavy
     const share = gibAll ? 1 : 0.35
@@ -497,7 +496,7 @@ export class Bot {
     this.slamT = Math.max(0, this.slamT - dt)
     this.summonT = Math.max(0, this.summonT - dt)
     if (ctx.frozen) {
-      this.anim.update(dt, 0, 0, 0, 0, 0, time)
+      this.animArgs.fill(0)
       return
     }
     this.perceiveT -= dt
@@ -680,7 +679,15 @@ export class Bot {
     const fwd = sp > 0.1 ? (this.vel.x * fx + this.vel.z * fz) / sp : 0
     const side = sp > 0.1 ? (this.vel.x * -fz + this.vel.z * fx) / sp : 0
     const aimYaw = Math.atan2(-this.aimDir.x, -this.aimDir.z) - this.yaw
-    this.anim.update(dt, sp, fwd, side, Math.atan2(Math.sin(aimYaw), Math.cos(aimYaw)), Math.asin(THREE.MathUtils.clamp(this.aimDir.y, -1, 1)), time)
+    // Pose inputs only; the skeleton advances per rendered frame (see render) so limbs stay in step
+    // with the interpolated body on any refresh rate.
+    const a = this.animArgs
+    a[0] = sp
+    a[1] = fwd
+    a[2] = side
+    a[3] = Math.atan2(Math.sin(aimYaw), Math.cos(aimYaw))
+    a[4] = Math.asin(THREE.MathUtils.clamp(this.aimDir.y, -1, 1))
+    void time
   }
 
   /** The Warden's signature attacks: close-range ground slam and drone reinforcements. */
@@ -884,12 +891,11 @@ export class Bot {
     this.world.noise(m, this.id, 40)
   }
 
-  render(alpha: number): void {
+  /** `dt`: frame time already scaled by the game (0 while paused). */
+  render(alpha: number, dt: number): void {
     const root = this.parts.root
+    dt = Math.min(0.05, dt)
     if (this.dyingT >= 0) {
-      const now = performance.now()
-      const dt = Math.min(0.05, (now - this.lastRender) / 1000)
-      this.lastRender = now
       this.dyingT += dt
       this.anim.update(dt, 0, 0, 0, 0, 0, this.world.time)
       if (this.dyingT > (this.kind === 'titan' ? 6 : 4.2)) {
@@ -904,6 +910,8 @@ export class Bot {
     let dy = this.yaw - this.prevYaw
     dy = Math.atan2(Math.sin(dy), Math.cos(dy))
     root.rotation.y = this.prevYaw + dy * alpha
+    const a = this.animArgs
+    this.anim.update(dt, a[0], a[1], a[2], a[3], a[4], this.world.time)
   }
 }
 

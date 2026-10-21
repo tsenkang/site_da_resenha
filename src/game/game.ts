@@ -1413,7 +1413,8 @@ export class Game implements CombatWorld {
       this.slowmo = Math.min(1, this.slowmo + dt * 0.5)
       dt *= this.slowmo
     }
-    // Juice: hit-stop on kills, slow-mo on big moments.
+    // Juice: hit-stop on kills, slow-mo on big moments (arcade modes only: tactical stays real-time).
+    if (this.tactical) this.hitstop = this.slowmoT = 0
     if (this.hitstop > 0) {
       this.hitstop -= rawDt
       dt *= 0.12
@@ -1930,7 +1931,7 @@ export class Game implements CombatWorld {
     const sh = this.trauma * this.trauma * shakeK
     const t = this.time * 22
     const shake = { x: (Math.sin(t * 1.3) + Math.sin(t * 2.9) * 0.5) * 0.035 * sh, y: (Math.sin(t * 1.7 + 1) + Math.sin(t * 3.3) * 0.5) * 0.035 * sh, r: Math.sin(t * 1.1 + 2) * 0.03 * sh }
-    for (const b of this.bots) if (b.alive || b.parts.root.visible) b.render(alpha)
+    for (const b of this.bots) if (b.alive || b.parts.root.visible) b.render(alpha, dt)
     if (!this.body && this.staged.player) {
       this.body = new PlayerBody(this.staged.player, this.staged.vm)
       this.scene.add(this.body.parts.root)

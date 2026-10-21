@@ -582,6 +582,16 @@ export class Arsenal {
         root.position.y -= 0.03 * inOut
         const cycle = ((this.reloadTotal - this.reloading - 0.3) / this.shellTime) % 1
         if (t > 0.1 && this.shellsQueued > 0) root.position.y += Math.sin(Math.max(0, cycle) * Math.PI) * 0.012
+      } else if (this.current === 'pistol') {
+        // Tilt the pistol in, drop the magazine out of the grip, seat a new one, rack the slide.
+        root.rotation.z += 0.5 * inOut
+        root.rotation.x += 0.25 * inOut
+        root.position.y -= 0.03 * inOut
+        if (vm.mag) {
+          const out = t < 0.15 ? 0 : t < 0.35 ? (t - 0.15) / 0.2 : t < 0.5 ? 1 : t < 0.68 ? 1 - (t - 0.5) / 0.18 : 0
+          vm.mag.position.y -= out * 0.18
+        }
+        if (t > 0.78 && t < 0.9) root.position.z += Math.sin(((t - 0.78) / 0.12) * Math.PI) * 0.025
       } else {
         root.position.y -= 0.22 * inOut
         root.rotation.x -= 0.5 * inOut
