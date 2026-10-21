@@ -9,7 +9,9 @@ import type { VmAssets } from './tripoguns'
 import { applyDamage } from './rules'
 
 /** `h`: height scale of the target's body (crouching player ≈ 0.55); bots look/aim lower. */
-export type Target = { id: number; pos: THREE.Vector3; vel: THREE.Vector3; alive: boolean; isPlayer: boolean; h?: number }
+export type Target = { id: number; pos: THREE.Vector3; vel: THREE.Vector3; alive: boolean; isPlayer: boolean; h?: number; team?: number }
+/** Where a tactical bot should be (and optionally which way to watch once there). */
+export type Objective = { x: number; z: number; lookX?: number; lookZ?: number; hold?: boolean }
 export type ItemInfo = { pos: THREE.Vector3; kind: 'health' | 'armor' | 'ammo' | 'rocket'; available: boolean }
 export type BrainContext = {
   targets: Target[]
@@ -19,6 +21,8 @@ export type BrainContext = {
   playerEye: THREE.Vector3
   playerId: number
   frozen: boolean
+  /** Tactical mode: per-bot goal from the round director (replaces roaming and item runs). */
+  objective?: (b: Bot) => Objective | null
 }
 
 type State = 'roam' | 'engage' | 'chase' | 'cover' | 'item'
@@ -83,6 +87,16 @@ export class Bot {
   target = -1
   /** Onslaught wave enemy (shares a team with other wave enemies). */
   wave = false
+  /** Tactical team (−1 = free-for-all). Bots never target or damage their own team. */
+  team = -1
+  /** Loadout scaling (tactical economy): damage per hit and time between shots. */
+  dmgMul = 1
+  rateMul = 1
+  /** Share of damage the armor soaks (tactical shields soak everything). */
+  absorb = CONFIG.player.armorAbsorb
+  /** Seconds the director has kept this bot still (planting / defusing). */
+  busy = false
+  private holdLook: { x: number; z: number } | null = null
   /** Uniform model scale (1 = human-sized). */
   readonly scale: number
   /** Heavy enemies resist knockback and flinch. */
@@ -159,6 +173,11 @@ export class Bot {
 
   get eye(): THREE.Vector3 {
     return tmpC.copy(this.pos).setY(this.pos.y + 1.6 * this.scale)
+  }
+
+  /** An enemy is in sight right now (tactical director pauses plants/defuses). */
+  get seesEnemy(): boolean {
+    return this.targetVisible && this.target >= 0
   }
 
   get dying(): boolean {
@@ -239,7 +258,7 @@ export class Bot {
     if (this.wave && this.world.onslaught && info.attacker !== 0 && info.attacker >= 0) return { dealt: 0, killed: false, armor: false }
     const before = this.health + this.armor
     const hadArmor = this.armor > 0
-    const r = applyDamage(this.health, this.armor, amount)
+    const r = applyDamage(this.health, this.armor, amount, this.absorb)
     this.health = r.health
     this.armor = r.armor
     const dealt = before - (r.health + r.armor)
@@ -338,6 +357,17 @@ export class Bot {
   }
 
   private pickRoam(ctx: BrainContext): void {
+    const obj = ctx.objective?.(this)
+    this.holdLook = obj && obj.lookX !== undefined && obj.lookZ !== undefined ? { x: obj.lookX, z: obj.lookZ } : null
+    if (obj) {
+      this.state = 'roam'
+      if (Math.hypot(obj.x - this.pos.x, obj.z - this.pos.z) < 1.6) {
+        this.path = []
+        return
+      }
+      if (this.goal.x !== obj.x || this.goal.z !== obj.z || this.path.length === 0) this.setPath(obj.x, obj.z)
+      return
+    }
     // Wave enemies hunt the player instead of roaming.
     if (this.wave) {
       const pl = ctx.targets.find(t => t.isPlayer && t.alive)
@@ -409,6 +439,7 @@ export class Bot {
     for (const t of ctx.targets) {
       if (!t.alive || t.id === this.id) continue
       if (this.wave && !t.isPlayer) continue
+      if (this.team >= 0 && t.team === this.team) continue
       const d = t.pos.distanceTo(this.pos)
       if (d > CONFIG.bots.viewRange * (this.wave ? 1.3 : 1)) continue
       const to = tmpB.copy(t.pos).sub(this.pos).setY(0).normalize()
@@ -535,13 +566,21 @@ export class Bot {
       }
       const w = this.followPath()
       if (w) desired.add(w)
-      if (!this.wave && ((!w && this.path.length === 0) || time - this.lastSeenAt > 7)) {
+      if (!this.wave && ((!w && this.path.length === 0) || time - this.lastSeenAt > (ctx.objective ? 3.5 : 7))) {
         this.target = -1
         this.pickRoam(ctx)
       }
     } else {
+      if (ctx.objective) {
+        // The round director moves goals (plant → retake): re-read the objective a few times a second.
+        this.repath -= dt
+        if (this.repath <= 0) {
+          this.repath = 0.6
+          this.pickRoam(ctx)
+        }
+      }
       if (this.path.length === 0 || this.pathI >= this.path.length) this.pickRoam(ctx)
-      const w = this.followPath()
+      const w = this.busy ? null : this.followPath()
       if (w) desired.add(w)
       if (this.state === 'item') {
         const still = ctx.items.some(it => it.available && it.pos.distanceTo(this.goal.clone().setY(it.pos.y)) < 1.5)
@@ -559,6 +598,18 @@ export class Bot {
         const d = Math.sqrt(d2)
         desired.x += (dx / d) * (r - d) * 1.2
         desired.z += (dz / d) * (r - d) * 1.2
+      }
+    }
+    // Never walk through the player (teammates in spawn, enemies at point-blank).
+    for (const t of ctx.targets) {
+      if (!t.isPlayer || !t.alive) continue
+      const dx = this.pos.x - t.pos.x
+      const dz = this.pos.z - t.pos.z
+      const d2 = dx * dx + dz * dz
+      if (d2 < 1.2 * 1.2 && d2 > 1e-4) {
+        const d = Math.sqrt(d2)
+        desired.x += (dx / d) * (1.2 - d) * 2
+        desired.z += (dz / d) * (1.2 - d) * 2
       }
     }
     if (desired.lengthSq() > 1) desired.normalize()
@@ -599,6 +650,11 @@ export class Bot {
       faceYaw = Math.atan2(-this.vel.x, -this.vel.z)
       const want = tmpB.set(-Math.sin(faceYaw), 0, -Math.cos(faceYaw))
       this.aimDir.lerp(want, 1 - Math.exp(-dt * 4)).normalize()
+    } else if (this.holdLook) {
+      // Holding an angle: watch the lane the enemy will come from.
+      faceYaw = Math.atan2(-(this.holdLook.x - this.pos.x), -(this.holdLook.z - this.pos.z))
+      const want = tmpB.set(-Math.sin(faceYaw), 0, -Math.cos(faceYaw))
+      this.aimDir.lerp(want, 1 - Math.exp(-dt * 3)).normalize()
     }
     let dy = faceYaw - this.yaw
     dy = Math.atan2(Math.sin(dy), Math.cos(dy))
@@ -746,7 +802,7 @@ export class Bot {
     if (this.burstLeft <= 0) this.burstLeft = Math.max(1, Math.round((CONFIG.bots.burst + rand(-1, 2)) * this.k.burst))
     this.burstLeft -= 1
     this.mag -= 1
-    this.fireT = CONFIG.bots.fireInterval * this.k.interval * rand(0.9, 1.15)
+    this.fireT = CONFIG.bots.fireInterval * this.k.interval * this.rateMul * rand(0.9, 1.15)
     if (this.burstLeft <= 0) this.fireT += CONFIG.bots.burstPause * rand(0.7, 1.4) * (this.wave ? 1.3 : 1)
     this.hitscan(tgt, ctx, this.k.pellets > 1 ? 'scatter' : 'pulse', false)
   }
@@ -776,7 +832,7 @@ export class Bot {
       if (p === 0 || p % 3 === 0) this.world.fx.tracer(muzzle, end, col, minigun ? 190 : 150, minigun ? 0.03 : 0.035)
       if (hit) {
         const tag = hit.tag
-        const dmg = CONFIG.bots.damage * this.k.damage * (this.k.pellets > 1 ? Math.max(0.3, 1 - Math.max(0, hit.distance - 5) / 14) : 1)
+        const dmg = CONFIG.bots.damage * this.k.damage * this.dmgMul * (this.k.pellets > 1 ? Math.max(0.3, 1 - Math.max(0, hit.distance - 5) / 14) : 1)
         if (tag?.kind === 'player') this.world.damage(0, { attacker: this.id, amount: dmg, source, from: eye.clone(), point: hit.point.clone() })
         else if (tag?.kind === 'bot') {
           if (!this.world.onslaught) {

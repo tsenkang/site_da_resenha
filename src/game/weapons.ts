@@ -2,8 +2,8 @@ import * as THREE from 'three'
 import { CONFIG, WEAPONS, WEAPON_ORDER, type WeaponDef, type WeaponId } from './config'
 import type { CombatWorld, DamageResult } from './combat'
 import { HEAD_Y } from './combat'
-import { buildRifle, buildRocket, buildShotgun, type ViewModel } from './guns'
-import { buildTripoRifle, buildTripoRocket, buildTripoShotgun, type VmAssets } from './tripoguns'
+import { buildPistol, buildRifle, buildRocket, buildShotgun, type ViewModel } from './guns'
+import { buildTripoPistol, buildTripoRifle, buildTripoRocket, buildTripoShotgun, type VmAssets } from './tripoguns'
 import type { Player } from './player'
 
 type Slot = { owned: boolean; mag: number; reserve: number }
@@ -88,6 +88,7 @@ export class Arsenal {
       rifle: A.rifle && arms ? buildTripoRifle(A, fx.flashTexture, fx.flameTexture) : buildRifle(fx.flashTexture, fx.flameTexture),
       shotgun: A.shotgun && arms ? buildTripoShotgun(A, fx.flashTexture, fx.flameTexture) : buildShotgun(fx.flashTexture, fx.flameTexture),
       rocket: A.launcher && arms ? buildTripoRocket(A, fx.flashTexture, fx.flameTexture) : buildRocket(fx.flashTexture, fx.flameTexture),
+      pistol: arms ? buildTripoPistol(A, fx.flashTexture, fx.flameTexture) : buildPistol(fx.flashTexture, fx.flameTexture),
     }
     this.tripoRocket = !!(A.launcher && arms)
     for (const vm of Object.values(this.vms)) {
@@ -102,6 +103,7 @@ export class Arsenal {
       rifle: { owned: true, mag: 0, reserve: 0 },
       shotgun: { owned: true, mag: 0, reserve: 0 },
       rocket: { owned: false, mag: 0, reserve: 0 },
+      pistol: { owned: false, mag: 0, reserve: 0 },
     }
     this.muzzleLight = new THREE.PointLight('#ffb35c', 0, 9, 1.8)
     this.muzzleLight.position.set(0.15, -0.05, -0.9)
@@ -146,7 +148,7 @@ export class Arsenal {
     for (const id of WEAPON_ORDER) {
       const d = WEAPONS[id]
       const s = this.slots[id]
-      s.owned = id !== 'rocket'
+      s.owned = id === 'rifle' || id === 'shotgun'
       s.mag = s.owned ? d.mag : 0
       s.reserve = s.owned ? d.reserveStart : 0
     }
@@ -180,6 +182,32 @@ export class Arsenal {
       s.reserve = d.reserveStart
       this.select(id)
     } else s.reserve = Math.min(d.reserveMax, s.reserve + d.mag * 2)
+  }
+
+  /**
+   * Tactical round start: own exactly the pistol plus an optional primary. Survivors keep their
+   * magazines (`keepAmmo`); a fresh purchase or a dead player gets full ammo.
+   */
+  setLoadout(primary: WeaponId | null, keepAmmo: boolean): void {
+    for (const id of WEAPON_ORDER) {
+      const s = this.slots[id]
+      const own = id === 'pistol' || id === primary
+      if (own && (!s.owned || !keepAmmo)) {
+        s.mag = WEAPONS[id].mag
+        s.reserve = WEAPONS[id].reserveStart
+      }
+      s.owned = own
+      if (!own) s.mag = s.reserve = 0
+    }
+    this.current = primary ?? 'pistol'
+    this.previous = 'pistol'
+    this.reloading = 0
+    this.cooldown = 0
+    this.bloom = 0
+    this.switchTo = null
+    this.switchT = 0.24
+    this.reloadSound?.stop()
+    this.showCurrent()
   }
 
   /** Ammo box: refill bullets and shells by a share of max reserve. Returns true if useful. */
@@ -345,6 +373,8 @@ export class Arsenal {
       window.setTimeout(() => {
         if (this.current === 'shotgun') A.play('shotgun_pump', { volume: 0.6, rate: 1.15 })
       }, 90)
+    } else if (this.current === 'pistol') {
+      A.play('rifle_shot', { volume: 0.7, rate: 1.45, jitter: 0.05 })
     } else {
       A.play('rocket_launch', { volume: 1, jitter: 0.03 })
     }
@@ -366,7 +396,7 @@ export class Arsenal {
     this.bloom = Math.min(d.bloomMax, this.bloom + d.bloom)
     this.events.fired(this.current, d.shake)
     // Shell ejection (rifle immediately, shotgun on pump).
-    if (vm.eject && this.current === 'rifle') this.ejectShell(vm, 1)
+    if (vm.eject && (this.current === 'rifle' || this.current === 'pistol')) this.ejectShell(vm, this.current === 'pistol' ? 0.7 : 1)
     if (vm.eject && this.current === 'shotgun') window.setTimeout(() => this.ejectShell(vm, 1.6), 120)
     if (this.current === 'rocket') {
       if (vm.warhead) vm.warhead.visible = false

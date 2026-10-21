@@ -62,7 +62,7 @@ export class Sparks {
   burst(x: number, y: number, o: SparkOpts = {}): void {
     if (!this.enabled) return
     const count = Math.round((o.count ?? 18) * this.density)
-    const [r, g, b] = parse(o.color ?? '#ffb040')
+    const [r, g, b] = parse(o.color ?? '#ff4655')
     const kind = o.kind === 'ember' ? 1 : o.kind === 'glow' ? 2 : 0
     for (let i = 0; i < count; i += 1) {
       const p = this.spawn()
@@ -117,8 +117,8 @@ export class Sparks {
         p.size = 1 + Math.random() * 2.2
         const hot = Math.random()
         p.r = 255
-        p.g = 110 + hot * 110
-        p.b = 30 + hot * 40
+        p.g = 70 + hot * 120
+        p.b = 85 + hot * 100
         p.drag = 0.2
         p.grav = -8
         p.kind = 1

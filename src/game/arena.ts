@@ -1,20 +1,19 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { RAPIER, type Physics } from '../engine/physics'
-import { CONT_H, CONT_L, CONT_W, CONTAINER_COLORS, DECAL_CELLS, containerDecalAtlas, containerParts, type ContSize } from './containers'
-import { applyGrime, noiseTexture, pbr, worldBox, type Library, type ModelId } from './library'
+import { worldBox, type Library } from './library'
 import { BLOCKED, NavGrid } from './nav'
 
 /**
- * V5 "Kestrel Terminal": an 80 × 80 m container yard on a wet evening, ringed by three-high walls
- * of weathered ISO containers, with a rubber-tyred gantry (RTG) crane straddling the central deck,
- * reach stackers as heavy cover, and an open north quay (fence, apron, ship-to-shore cranes, a
- * container ship) as the skyline. Static meshes are merged per material, every solid has a matching
- * Rapier collider, and the navigation grid is baked from those colliders with down-rays.
+ * "Base Aurora": a sunny two-site tactical map in a painted, low-poly style. Attackers spawn in the
+ * south, defenders in the north; Site A sits west, Site B east, joined by a central Mid that splits
+ * into two links and a narrow Market corridor. Every lane is 8 m wide or more so bots path cleanly.
  *
- * Boot cost: containers, markings, ship and water are procedural; the RTG and reach-stacker scans
- * load with the library (stage 1), the STS cranes stream in with stage 2 (`attachSts`). Their
- * collision volumes are measured slices of the scans, so physics/nav never wait for a mesh.
+ * Built for weak GPUs: flat Lambert materials with tiny canvas textures, static geometry merged per
+ * material (a dozen draw calls for the whole map), no point lights, no scanned models in the level.
+ * Every solid has a matching Rapier box collider and the bot navigation grid is baked from them.
+ *
+ * Coordinates: X west(−) → east(+), Z north(−) → south(+), metres, floor at y = 0.
  */
 export type Surface = 'concrete' | 'metal' | 'wood'
 export type ColliderTag =
@@ -24,98 +23,120 @@ export type ColliderTag =
   | { kind: 'player' }
   | { kind: 'prop'; index: number }
 
-export const HALF = 40
+export const HALF_X = 46
+export const HALF_Z = 50
 
 export type PropSpot = { pos: THREE.Vector3; model: 'barrel' | 'propane'; rot: number }
 export type PickupSpot = { pos: THREE.Vector3; kind: 'health' | 'armor' | 'ammo' | 'rocket' }
+export type SiteId = 'A' | 'B'
+/** Axis-aligned plant zone. */
+export type Site = { id: SiteId; center: THREE.Vector3; halfX: number; halfZ: number; color: string }
+/** Minimap rectangle (top-down), `kind` picks its fill. */
+export type MapRect = { x0: number; x1: number; z0: number; z1: number; kind: 'building' | 'cover' | 'wall' }
+export type TeamSide = 'attack' | 'defend'
 
-const tmpQ = new THREE.Quaternion()
-const UP = new THREE.Vector3(0, 1, 0)
-
-/** Interior container cover: [x, z, rotDeg, stack, size]. Point-symmetric for fair spawns. */
-const COVER_CONTAINERS: [number, number, number, number, ContSize][] = [
-  [-20, -22, 0, 2, 40], [-13.2, -28, 90, 1, 20], [20, 22, 180, 2, 40], [13.2, 28, 270, 1, 20],
-  [25, -16, 90, 1, 20], [27.7, -16.6, 90, 1, 20], [-25, 16, 270, 1, 20], [-27.7, 16.6, 270, 2, 20],
-  [0, -30, 0, 1, 40], [0, 30, 180, 1, 40], [-34, -4, 90, 1, 20], [34, 4, 270, 1, 20],
+/** Building blocks [x0, x1, z0, z1, height, style]. Lanes are the gaps between them. */
+const BUILDINGS: [number, number, number, number, number, number][] = [
+  [-46, -38, -4, 20, 7.5, 0], // A main, west row
+  [-30, -8, -6, 24, 8, 1], // west block (between A main and Mid)
+  [8, 30, -6, 24, 8, 2], // east block (between Mid and B main)
+  [38, 46, -4, 20, 7.5, 0], // B main, east row
+  [-16, -3, -36, -14, 7, 2], // north-west block (A link / Market)
+  [3, 16, -36, -14, 7, 1], // north-east block (Market / B link)
 ]
-const YARD_WET = 0.85
+
+/** Cover: [x, z, w, d, h, kind] — kind 0 crate, 1 stone planter / low wall, 2 metal generator. */
+const COVER: [number, number, number, number, number, number][] = [
+  // Site A
+  [-31, -24, 3.2, 3.2, 2.2, 2], [-38, -16, 2, 2, 1.6, 0], [-38, -14, 2, 2, 1.6, 0], [-38, -15, 2, 2, 3.2, 0],
+  [-24, -31, 2, 2, 1.6, 0], [-22, -31, 2, 2, 1.6, 0], [-41, -30, 1.2, 6, 1.1, 1], [-22, -18, 4, 1.2, 1.1, 1],
+  // Site B
+  [31, -24, 3.2, 3.2, 2.2, 2], [38, -16, 2, 2, 1.6, 0], [38, -14, 2, 2, 1.6, 0], [38, -15, 2, 2, 3.2, 0],
+  [24, -31, 2, 2, 1.6, 0], [22, -31, 2, 2, 1.6, 0], [41, -30, 1.2, 6, 1.1, 1], [22, -18, 4, 1.2, 1.1, 1],
+  // Mid
+  [0, 7, 4.5, 4.5, 1.1, 1], [-4, -10, 2, 2, 1.6, 0], [4, -10, 2, 2, 1.6, 0], [0, 18, 2, 2, 1.6, 0], [1.6, 19.2, 1.4, 1.4, 1.1, 0],
+  // Mains and lobbies
+  [-34, 6, 2, 2, 1.6, 0], [-35.5, 7.5, 1.4, 1.4, 1.1, 0], [34, 6, 2, 2, 1.6, 0], [35.5, 7.5, 1.4, 1.4, 1.1, 0],
+  [-26, 30, 5, 1.2, 1.1, 1], [26, 30, 5, 1.2, 1.1, 1], [-40, 28, 2, 2, 1.6, 0], [40, 28, 2, 2, 1.6, 0],
+  // Defender back lane
+  [-26, -43, 2, 2, 1.6, 0], [26, -43, 2, 2, 1.6, 0], [0, -42, 6, 1.2, 1.1, 1],
+]
+
+const PALETTE = {
+  floor: '#d8ccb6',
+  street: '#c9bca4',
+  stucco: ['#ebe0cb', '#e3cfae', '#d9e2df'],
+  trim: ['#b65a3c', '#2e8b86', '#3d5f8a'],
+  base: '#a48f74',
+  window: '#33495c',
+  frame: '#f4efe6',
+  crate: '#b98250',
+  stone: '#c3b49b',
+  metal: '#7c8a93',
+  perimeter: '#d5c4a6',
+  mountain: '#8fa6b8',
+}
 
 export class Arena {
   readonly group = new THREE.Group()
   readonly tags = new Map<number, ColliderTag>()
   readonly nav: NavGrid
   sun!: THREE.DirectionalLight
+  /** Free-for-all spawns (Deathmatch / Onslaught). */
   readonly spawns: THREE.Vector3[] = []
+  readonly teamSpawns: Record<TeamSide, THREE.Vector3[]> = { attack: [], defend: [] }
+  readonly sites: Site[] = []
   readonly props: PropSpot[] = []
   readonly pickups: PickupSpot[] = []
-  // Decorative fires glow onto the ground with an unlit additive decal instead of a PointLight.
+  /** Places worth walking to when there is nothing better to do. */
+  readonly hotspots: THREE.Vector3[] = []
+  readonly minimap: MapRect[] = []
+  // Kept for API compatibility with the old yard (no fires or lamps in daylight).
   readonly fires: { pos: THREE.Vector3; glow: THREE.MeshBasicMaterial }[] = []
   readonly lamps: THREE.PointLight[] = []
   private readonly mats: Record<string, THREE.Material> = {}
   private readonly pending = new Map<string, THREE.BufferGeometry[]>()
   private readonly noShadow = new Set<string>()
-  private readonly timeUniform = { value: 0 }
-  private readonly water: { mat?: THREE.MeshStandardMaterial } = {}
-  private rain?: { mesh: THREE.LineSegments; mat: THREE.ShaderMaterial; max: number }
-  private camera?: THREE.Camera
-  private stsAttached = false
-  private seed = 1337
+  private readonly barriers: { side: TeamSide; collider: RAPIER.Collider; mesh: THREE.Mesh }[] = []
+  private readonly barrierMat: THREE.MeshBasicMaterial
+  private time = 0
 
   constructor(readonly scene: THREE.Scene, private readonly physics: Physics, private readonly lib: Library) {
-    const S = lib.sets
-    const std = (key: string, m: THREE.MeshStandardMaterial) => (this.mats[key] = m)
-    // Wet yard concrete: CC0 concrete_floor_03 + painted markings, slab joints, puddles and ripples.
-    const floor = std('floor', pbr(S.concrete_floor_03, { color: '#a49c94', normalScale: 0.9 }))
-    applyGrime(floor, { amount: 0.75, wet: 0, foot: 0 })
-    this.wetYard(floor, undefined, new THREE.Vector4(-HALF, -HALF, HALF * 2, YARD_WET), 'yard')
-    const apron = std('apron', pbr(S.concrete_floor_worn_001, { color: '#8d857d' }))
-    applyGrime(apron, { amount: 0.8, wet: 0, foot: 0 })
-    this.wetYard(apron, undefined, new THREE.Vector4(0, 0, 1, YARD_WET * 0.8), 'apron')
-    std('wall', pbr(S.concrete_wall_008, { color: '#b9b0a6' }))
-    std('rust', pbr(S.rusty_metal_02, { color: '#ffffff' }))
-    std('plate', pbr(S.metal_plate, { color: '#a9a39c' }))
-    std('darkMetal', pbr(S.metal_plate, { color: '#3a3836', normalScale: 0.6 }))
-    std('steel', pbr(S.metal_plate, { color: '#55524e', normalScale: 0.4, envMapIntensity: 0.35 }))
-    std('hull', pbr(S.metal_plate, { color: '#232c38', normalScale: 0.5, envMapIntensity: 0.3 }))
-    std('house', pbr(S.concrete_wall_008, { color: '#d6d1c6', normalScale: 0.3 }))
-    std('hazard', new THREE.MeshStandardMaterial({ map: hazardTexture(), roughness: 0.7, metalness: 0.2 }))
-    applyGrime(this.mats.wall as THREE.MeshStandardMaterial, { amount: 1 })
-    applyGrime(this.mats.plate as THREE.MeshStandardMaterial, { amount: 0.7, scale: 2 })
-    applyGrime(this.mats.rust as THREE.MeshStandardMaterial, { amount: 0.5, scale: 2, foot: 0.5 })
-    applyGrime(this.mats.steel as THREE.MeshStandardMaterial, { amount: 0.6, scale: 2, foot: 0.4 })
-    // Container paint: low-metal satin paint with grime (no corrugated texture: the geometry has real ribs).
-    const paintRough = noiseTexture(256, 11, 6, 1.4)
-    paintRough.repeat.set(1, 1)
-    CONTAINER_COLORS.forEach((c, i) => {
-      const m = std(`cont${i}`, new THREE.MeshStandardMaterial({ color: c, roughness: 0.78, metalness: 0.28, roughnessMap: paintRough, envMapIntensity: 0.35 }))
-      applyGrime(m, { amount: 1, scale: 1.4, foot: 0.8 })
-    })
-    this.mats.decal = new THREE.MeshStandardMaterial({ map: containerDecalAtlas(), transparent: true, depthWrite: false, roughness: 0.8, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
-    this.mats.fence = new THREE.MeshStandardMaterial({ map: chainLinkTexture(), alphaTest: 0.4, side: THREE.DoubleSide, color: '#a7a7a0', roughness: 0.55, metalness: 0.6, envMapIntensity: 0.3 })
-    this.noShadow.add('decal')
-    this.noShadow.add('hull')
-    this.noShadow.add('house')
+    void this.lib
+    const lam = (key: string, color: string, map?: THREE.Texture) => (this.mats[key] = new THREE.MeshLambertMaterial({ color, map: map ?? null }))
+    const stucco = stuccoTexture()
+    lam('floor', PALETTE.floor, tileTexture())
+    lam('street', PALETTE.street, tileTexture(true))
+    PALETTE.stucco.forEach((c, i) => lam(`stucco${i}`, c, stucco))
+    PALETTE.trim.forEach((c, i) => lam(`trim${i}`, c))
+    lam('base', PALETTE.base, stucco)
+    lam('window', PALETTE.window)
+    lam('frame', PALETTE.frame)
+    lam('crate', PALETTE.crate, crateTexture())
+    lam('stone', PALETTE.stone, stucco)
+    lam('metal', PALETTE.metal)
+    lam('perimeter', PALETTE.perimeter, stucco)
+    this.mats.paint = new THREE.MeshBasicMaterial({ map: sitePaintTexture(), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+    for (const k of ['window', 'frame', 'paint']) this.noShadow.add(k)
+    this.barrierMat = new THREE.MeshBasicMaterial({ map: barrierTexture(), color: new THREE.Color(0.35, 1.6, 1.4), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
+    this.buildSky()
     this.buildLighting()
     this.buildGround()
     this.buildPerimeter()
-    this.buildPlatform()
-    this.buildCover()
-    this.buildQuay()
+    for (const [x0, x1, z0, z1, h, style] of BUILDINGS) this.building(x0, x1, z0, z1, h, style)
+    for (const c of COVER) this.cover(...c)
+    this.buildSites()
     this.flush()
-    this.placeModels()
-    this.buildBackdropStacks()
     this.physics.world.step()
     this.nav = this.bakeNav()
+    // Spawn barriers go in after the nav bake: they are temporary and must not carve the grid.
+    this.barrier('attack', 34.5)
+    this.barrier('defend', -37.5)
     this.defineSpots()
     this.scene.add(this.group)
   }
 
   // ─── building helpers ──────────────────────────────────────────────────
-  private rand(): number {
-    this.seed = (this.seed * 16807) % 2147483647
-    return this.seed / 2147483647
-  }
-
   private queue(key: string, geo: THREE.BufferGeometry, matrix: THREE.Matrix4): void {
     const g = (geo.index ? geo.toNonIndexed() : geo.clone()).applyMatrix4(matrix)
     for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name)
@@ -131,597 +152,238 @@ export class Arena {
       merged.computeBoundingSphere()
       const mesh = new THREE.Mesh(merged, this.mats[key])
       mesh.castShadow = !this.noShadow.has(key)
-      mesh.receiveShadow = key !== 'decal'
+      mesh.receiveShadow = key !== 'paint'
       mesh.matrixAutoUpdate = false
-      if (key === 'decal') mesh.renderOrder = 2
+      if (key === 'paint') mesh.renderOrder = 2
       this.group.add(mesh)
     }
     this.pending.clear()
   }
 
-  /** Solid box with collider. rotY in radians. */
-  private box(mat: string, cx: number, cy: number, cz: number, w: number, h: number, d: number, opts: { rotY?: number; tile?: number; collide?: boolean; surface?: Surface; rotX?: number } = {}): void {
+  /** Solid box (bottom at y0) with a matching collider. */
+  private box(mat: string, cx: number, y0: number, cz: number, w: number, h: number, d: number, opts: { tile?: number; collide?: boolean; surface?: Surface } = {}): void {
     const geo = worldBox(w, h, d, opts.tile ?? 4)
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(opts.rotX ?? 0, opts.rotY ?? 0, 0, 'YXZ'))
-    const m = new THREE.Matrix4().compose(new THREE.Vector3(cx, cy, cz), q, new THREE.Vector3(1, 1, 1))
-    this.queue(mat, geo, m)
-    if (opts.collide !== false) {
-      const c = this.physics.addStaticBox(new THREE.Vector3(cx, cy, cz), new THREE.Vector3(w, h, d), q)
-      this.tags.set(c.handle, { kind: 'world', surface: opts.surface ?? (mat === 'wall' || mat === 'floor' ? 'concrete' : 'metal') })
-    }
+    this.queue(mat, geo, new THREE.Matrix4().makeTranslation(cx, y0 + h / 2, cz))
+    if (opts.collide !== false) this.collider(cx, y0 + h / 2, cz, w, h, d, opts.surface ?? 'concrete')
   }
 
-  private collider(cx: number, cy: number, cz: number, w: number, h: number, d: number, rotY: number, surface: Surface): void {
-    tmpQ.setFromAxisAngle(UP, rotY)
-    const c = this.physics.addStaticBox(new THREE.Vector3(cx, cy, cz), new THREE.Vector3(w, h, d), tmpQ.clone())
+  private collider(cx: number, cy: number, cz: number, w: number, h: number, d: number, surface: Surface): RAPIER.Collider {
+    const c = this.physics.addStaticBox(new THREE.Vector3(cx, cy, cz), new THREE.Vector3(w, h, d))
     this.tags.set(c.handle, { kind: 'world', surface })
+    return c
   }
 
-  /** Collider from a normalized local AABB of a scan placed at `pos`/`rotY`/`scale`. */
-  private scanCollider(pos: THREE.Vector3, rotY: number, scale: number, groundY: number, min: [number, number, number], max: [number, number, number], surface: Surface): void {
-    const c = new THREE.Vector3((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2).multiplyScalar(scale).applyAxisAngle(UP, rotY)
-    this.collider(pos.x + c.x, groundY + c.y, pos.z + c.z, (max[0] - min[0]) * scale, (max[1] - min[1]) * scale, (max[2] - min[2]) * scale, rotY, surface)
-  }
-
-  /**
-   * Stamp one procedural ISO container (floor at y). Length runs along local X, doors at +X.
-   * Collider is optional so stacked walls can share one big box.
-   */
-  private container(x: number, y: number, z: number, rot: number, size: ContSize, color: number, collide = true): void {
-    const parts = containerParts(size)
-    const m = new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromAxisAngle(UP, rot), new THREE.Vector3(1, 1, 1))
-    this.queue(`cont${color % CONTAINER_COLORS.length}`, parts.paint, m)
-    this.queue('steel', parts.steel, m)
-    this.queue('decal', parts.decal(Math.floor(this.rand() * DECAL_CELLS)), m)
-    if (collide) this.collider(x, y + CONT_H / 2, z, CONT_L[size], CONT_H, CONT_W, rot, 'metal')
-  }
-
-  private wetYard(m: THREE.MeshStandardMaterial, marks: THREE.Texture | undefined, yard: THREE.Vector4, key: string): void {
-    // The original wet-yard pass depended on the removed world-space grime helpers. The remix
-    // keeps the call site for source compatibility but uses flat materials instead of custom GLSL.
-    void m
-    void marks
-    void yard
-    void key
-  }
-
-  // ─── lighting ──────────────────────────────────────────────────────────
-  private buildLighting(): void {
+  // ─── sky, light, ground ────────────────────────────────────────────────
+  private buildSky(): void {
     const scene = this.scene
-    scene.background = this.lib.sky
-    scene.backgroundIntensity = 0.85
-    scene.environmentIntensity = 0.32
-    // Drizzle haze: cooler and a touch denser than the Foundry, so cranes/ship read as silhouettes.
-    scene.fog = new THREE.FogExp2('#7a6c66', 0.0088)
-    // Sun breaking under the storm front, low over the quay.
-    const sunDir = new THREE.Vector3(0.49, 0.62, 0.86).normalize()
-    const sun = new THREE.DirectionalLight('#ffb98a', 3.5)
+    scene.background = skyTexture()
+    scene.backgroundIntensity = 1
+    scene.environmentIntensity = 0.55
+    scene.fog = new THREE.FogExp2('#cfdde6', 0.0042)
+    // Distant low-poly ridge ring: one unlit draw call that gives the horizon depth.
+    const segs = 96
+    const R = 260
+    const pos: number[] = []
+    let seed = 7
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+    const heights = Array.from({ length: segs }, (_, i) => 18 + Math.sin(i * 0.31) * 10 + Math.sin(i * 0.11 + 1) * 14 + rnd() * 9)
+    for (let i = 0; i < segs; i += 1) {
+      const a0 = (i / segs) * Math.PI * 2
+      const a1 = ((i + 1) / segs) * Math.PI * 2
+      const h0 = heights[i]
+      const h1 = heights[(i + 1) % segs]
+      const p = (a: number, y: number) => [Math.cos(a) * R, y, Math.sin(a) * R]
+      pos.push(...p(a0, -5), ...p(a1, -5), ...p(a1, h1), ...p(a0, -5), ...p(a1, h1), ...p(a0, h0))
+    }
+    const g = new THREE.BufferGeometry()
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+    const ridge = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: PALETTE.mountain, side: THREE.DoubleSide, fog: false }))
+    ridge.matrixAutoUpdate = false
+    this.group.add(ridge)
+  }
+
+  private buildLighting(): void {
+    const sunDir = new THREE.Vector3(-0.45, 0.82, 0.38).normalize()
+    const sun = new THREE.DirectionalLight('#fff0d8', 2.1)
     sun.position.copy(sunDir).multiplyScalar(90)
     sun.target.position.set(0, 0, 0)
     sun.castShadow = true
     const cam = sun.shadow.camera
-    cam.left = cam.bottom = -58
-    cam.right = cam.top = 58
+    cam.left = cam.bottom = -62
+    cam.right = cam.top = 62
     cam.near = 10
     cam.far = 200
-    sun.shadow.bias = -0.00035
-    sun.shadow.normalBias = 0.04
-    sun.shadow.mapSize.set(2048, 2048)
+    sun.shadow.bias = -0.0006
+    sun.shadow.normalBias = 0.05
+    sun.shadow.mapSize.set(1024, 1024)
     this.sun = sun
-    scene.add(sun, sun.target)
-    const hemi = new THREE.HemisphereLight('#8f9fbf', '#3a2a20', 0.4)
-    scene.add(hemi)
+    this.scene.add(sun, sun.target)
+    this.scene.add(new THREE.HemisphereLight('#d6e8ff', '#b39a7c', 1.35))
   }
 
-  // ─── ground: yard slab, apron, outer terminal ──────────────────────────
   private buildGround(): void {
-    const plane = (key: string, w: number, d: number, x: number, y: number, z: number, tile: number) => {
-      const g = new THREE.PlaneGeometry(w, d)
+    const floor = (key: string, x0: number, x1: number, z0: number, z1: number, tile: number) => {
+      const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0)
       g.rotateX(-Math.PI / 2)
       const uv = g.getAttribute('uv') as THREE.BufferAttribute
-      for (let i = 0; i < uv.count; i += 1) uv.setXY(i, (uv.getX(i) * w) / tile, (uv.getY(i) * d) / tile)
-      this.queue(key, g, new THREE.Matrix4().makeTranslation(x, y, z))
+      for (let i = 0; i < uv.count; i += 1) uv.setXY(i, (uv.getX(i) * (x1 - x0)) / tile, (uv.getY(i) * (z1 - z0)) / tile)
+      this.queue(key, g, new THREE.Matrix4().makeTranslation((x0 + x1) / 2, 0, (z0 + z1) / 2))
     }
-    plane('floor', HALF * 2, HALF * 2, 0, 0, 0, 4)
-    // Apron north of the fence up to the quay edge (z = 86), and the rest of the terminal around us.
-    plane('apron', 340, 46, 0, -0.02, 63, 5)
-    plane('apron', 340, 294, 0, -0.05, -107, 6)
-    plane('apron', 130, 80, -105, -0.04, 0, 6)
-    plane('apron', 130, 80, 105, -0.04, 0, 6)
-    const c = this.physics.addStaticBox(new THREE.Vector3(0, -0.5, 0), new THREE.Vector3(HALF * 2 + 6, 1, HALF * 2 + 6))
-    this.tags.set(c.handle, { kind: 'world', surface: 'concrete' })
+    floor('floor', -HALF_X, HALF_X, -HALF_Z, HALF_Z, 4)
+    // Paved lanes read as streets between the plazas.
+    floor('street', -38, -30, -4, 24, 2)
+    floor('street', 30, 38, -4, 24, 2)
+    floor('street', -8, 8, -6, 28, 2)
+    floor('street', -3, 3, -36, -6, 2)
+    // Outside the walls: a wide plain under the ridge so the horizon never shows a void.
+    for (const [x0, x1, z0, z1] of [[-300, 300, -300, -HALF_Z], [-300, 300, HALF_Z, 300], [-300, -HALF_X, -HALF_Z, HALF_Z], [HALF_X, 300, -HALF_Z, HALF_Z]]) {
+      const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0)
+      g.rotateX(-Math.PI / 2)
+      this.queue('stone', g, new THREE.Matrix4().makeTranslation((x0 + x1) / 2, -0.05, (z0 + z1) / 2))
+    }
+    this.collider(0, -0.5, 0, HALF_X * 2 + 6, 1, HALF_Z * 2 + 6, 'concrete')
   }
 
-  // ─── perimeter: three-high container walls (W, S, E) ───────────────────
   private buildPerimeter(): void {
-    const off = HALF + CONT_W / 2
-    const L = CONT_L[40]
-    const wall = (along: 'x' | 'z', fixed: number, start: number, n: number, doorsOut: number) => {
-      for (let i = 0; i < n; i += 1) {
-        const t = start + L / 2 + i * L
-        const tiers = 3 + (this.rand() < 0.35 ? 1 : 0)
-        for (let s = 0; s < tiers; s += 1) {
-          const jitter = (this.rand() - 0.5) * 0.12
-          const x = along === 'x' ? t + jitter : fixed
-          const z = along === 'x' ? fixed : t + jitter
-          const rot = (along === 'x' ? 0 : Math.PI / 2) + (this.rand() < 0.5 ? Math.PI : 0) + (this.rand() - 0.5) * 0.008
-          this.container(x, s * CONT_H, z, rot, 40, Math.floor(this.rand() * 64), false)
-        }
-      }
-      void doorsOut
+    const h = 9
+    const t = 2
+    const wall = (cx: number, cz: number, w: number, d: number) => {
+      this.box('perimeter', cx, 0, cz, w, h, d, { tile: 6 })
+      this.box('trim0', cx, h - 0.6, cz, w + 0.3, 0.8, d + 0.3, { collide: false, tile: 2 })
+      this.box('base', cx, 0, cz, w + 0.12, 0.8, d + 0.12, { collide: false, tile: 2 })
     }
-    wall('x', -off, -L * 3.5, 7, 0)
-    wall('z', -off, -HALF, 7, 0)
-    wall('z', off, -HALF, 7, 0)
-    // One solid collider per wall (players cannot climb 7.8 m; stops rockets cleanly).
-    this.collider(0, 4.5, -off, L * 7 + CONT_W * 2, 9, CONT_W, 0, 'metal')
-    for (const s of [-1, 1]) this.collider(s * off, 4.5, -HALF + (L * 7) / 2, CONT_W, 9, L * 7, 0, 'metal')
+    wall(0, -HALF_Z - t / 2 + 1, HALF_X * 2 + 2 * t, t)
+    wall(0, HALF_Z + t / 2 - 1, HALF_X * 2 + 2 * t, t)
+    wall(-HALF_X - t / 2 + 1, 0, t, HALF_Z * 2)
+    wall(HALF_X + t / 2 - 1, 0, t, HALF_Z * 2)
+    this.minimap.push(
+      { x0: -HALF_X - 1, x1: HALF_X + 1, z0: -HALF_Z - 1, z1: -HALF_Z + 1, kind: 'wall' },
+      { x0: -HALF_X - 1, x1: HALF_X + 1, z0: HALF_Z - 1, z1: HALF_Z + 1, kind: 'wall' },
+      { x0: -HALF_X - 1, x1: -HALF_X + 1, z0: -HALF_Z, z1: HALF_Z, kind: 'wall' },
+      { x0: HALF_X - 1, x1: HALF_X + 1, z0: -HALF_Z, z1: HALF_Z, kind: 'wall' },
+    )
   }
 
-  // ─── central deck (kept from the Foundry: proven sightlines) ───────────
-  private buildPlatform(): void {
-    const top = 1.6
-    const half = 7
-    this.box('wall', 0, top / 2 - 0.02, 0, half * 2, top - 0.04, half * 2, { surface: 'concrete' })
-    this.box('plate', 0, top - 0.02, 0, half * 2 + 0.1, 0.04, half * 2 + 0.1, { tile: 2, collide: false })
-    for (const s of [-1, 1]) {
-      this.box('hazard', 0, top - 0.16, s * (half + 0.03), half * 2 + 0.1, 0.24, 0.04, { collide: false, tile: 1 })
-      this.box('hazard', s * (half + 0.03), top - 0.16, 0, 0.04, 0.24, half * 2 + 0.1, { collide: false, tile: 1 })
-    }
-    this.collider(0, top - 0.02, 0, half * 2, 0.04, half * 2, 0, 'metal')
-    for (const s of [-1, 1]) this.ramp(0, s * half, 0, s * (half + 6.2), 5, top)
-    const railY = top
-    const rail = (x0: number, z0: number, x1: number, z1: number) => {
-      const len = Math.hypot(x1 - x0, z1 - z0)
-      const cx = (x0 + x1) / 2
-      const cz = (z0 + z1) / 2
-      const rot = Math.atan2(-(z1 - z0), x1 - x0)
-      for (const hgt of [0.55, 1.05]) this.pipe(cx, railY + hgt, cz, len, rot)
-      const posts = Math.max(2, Math.round(len / 1.8) + 1)
-      for (let i = 0; i < posts; i += 1) {
-        const t = i / (posts - 1)
-        const post = new THREE.CylinderGeometry(0.035, 0.035, 1.08, 8)
-        this.queue('rust', post, new THREE.Matrix4().makeTranslation(x0 + (x1 - x0) * t, railY + 0.54, z0 + (z1 - z0) * t))
-      }
-      this.collider(cx, railY + 0.55, cz, len, 1.1, 0.08, rot, 'metal')
-    }
-    rail(-half, -half, -2.6, -half)
-    rail(2.6, -half, half, -half)
-    rail(-half, half, -2.6, half)
-    rail(2.6, half, half, half)
-    rail(-half, -half, -half, half)
-    rail(half, -half, half, half)
-  }
-
-  private pipe(cx: number, cy: number, cz: number, len: number, rotY: number, mat = 'rust', r = 0.03): void {
-    const g = new THREE.CylinderGeometry(r, r, len, 8)
-    g.rotateZ(Math.PI / 2)
-    this.queue(mat, g, new THREE.Matrix4().compose(new THREE.Vector3(cx, cy, cz), new THREE.Quaternion().setFromAxisAngle(UP, rotY), new THREE.Vector3(1, 1, 1)))
-  }
-
-  /** Straight ramp from high edge (xh,zh) at `height` down to (xl,zl) at ground level. */
-  private ramp(xh: number, zh: number, xl: number, zl: number, width: number, height: number): void {
-    const run = Math.hypot(xl - xh, zl - zh)
-    const len = Math.hypot(run, height)
-    const pitch = Math.atan2(height, run)
-    const t = 0.3
-    const dirX = (xh - xl) / run
-    const dirZ = (zh - zl) / run
-    const rotY = Math.atan2(dirX, dirZ)
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-pitch, rotY, 0, 'YXZ'))
-    const normal = new THREE.Vector3(0, 1, 0).applyQuaternion(q)
-    const mid = new THREE.Vector3((xh + xl) / 2, height / 2, (zh + zl) / 2).addScaledVector(normal, -t / 2)
-    this.queue('plate', worldBox(width, t, len, 2), new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1)))
-    const c = this.physics.addStaticBox(mid, new THREE.Vector3(width, t, len), q)
-    this.tags.set(c.handle, { kind: 'world', surface: 'metal' })
-    for (const s of [-1, 1]) {
-      const shape = new THREE.Shape()
-      shape.moveTo(0, 0)
-      shape.lineTo(run, 0)
-      shape.lineTo(run, height)
-      shape.closePath()
-      const g = new THREE.ExtrudeGeometry(shape, { depth: 0.2, bevelEnabled: false })
-      const uvs = g.getAttribute('uv') as THREE.BufferAttribute
-      for (let i = 0; i < uvs.count; i += 1) uvs.setXY(i, uvs.getX(i) / 4, uvs.getY(i) / 4)
-      const m = new THREE.Matrix4().compose(
-        new THREE.Vector3(xl + -dirZ * ((s * width) / 2), 0, zl + dirX * ((s * width) / 2)),
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.atan2(-dirZ, dirX), 0)),
-        new THREE.Vector3(1, 1, 1),
-      )
-      m.multiply(new THREE.Matrix4().makeTranslation(0, 0, -0.1))
-      this.queue('wall', g, m)
-    }
-  }
-
-  // ─── cover: containers, jersey barriers, blast walls, light poles ──────
-  private barrier(x: number, z: number, rotDeg: number): void {
-    const shape = new THREE.Shape()
-    const pts: [number, number][] = [[-0.3, 0], [0.3, 0], [0.3, 0.08], [0.15, 0.3], [0.1, 0.81], [-0.1, 0.81], [-0.15, 0.3], [-0.3, 0.08]]
-    shape.moveTo(pts[0][0], pts[0][1])
-    for (const p of pts.slice(1)) shape.lineTo(p[0], p[1])
-    shape.closePath()
-    const len = 3
-    const g = new THREE.ExtrudeGeometry(shape, { depth: len, bevelEnabled: true, bevelSize: 0.015, bevelThickness: 0.015, bevelSegments: 1 })
-    g.translate(0, 0, -len / 2)
-    const uvs = g.getAttribute('uv') as THREE.BufferAttribute
-    for (let i = 0; i < uvs.count; i += 1) uvs.setXY(i, uvs.getX(i) / 2.5, uvs.getY(i) / 2.5)
-    const rot = (rotDeg * Math.PI) / 180
-    this.queue('wall', g, new THREE.Matrix4().compose(new THREE.Vector3(x, 0, z), new THREE.Quaternion().setFromAxisAngle(UP, rot), new THREE.Vector3(1, 1, 1)))
-    this.collider(x, 0.405, z, 0.5, 0.81, len, rot, 'concrete')
-  }
-
-  private buildCover(): void {
-    COVER_CONTAINERS.forEach(([x, z, r, stack, size], i) => {
-      for (let s = 0; s < stack; s += 1) this.container(x + (s ? 0.06 : 0), s * CONT_H, z, (r * Math.PI) / 180 + (s ? 0.015 : 0), size, i * 3 + s * 5)
-    })
-    const barriers: [number, number, number][] = [
-      [-10.5, -11, 45], [10.5, 11, 45], [11, -10.5, -45], [-11, 10.5, -45],
-      [-30, 30, 90], [30, -30, 90], [-7, 20.5, 0], [7, -20.5, 0],
-      [18.5, 1, 90], [-18.5, -1, 90], [-22, -9, 0], [22, 9, 0], [-4, -36, 0], [4, 36, 0],
+  /** A stucco building: body, base trim, coloured cornice, framed windows and doors on every face. */
+  private building(x0: number, x1: number, z0: number, z1: number, h: number, style: number): void {
+    const w = x1 - x0
+    const d = z1 - z0
+    const cx = (x0 + x1) / 2
+    const cz = (z0 + z1) / 2
+    this.box(`stucco${style}`, cx, 0, cz, w, h, d, { tile: 5 })
+    this.box('base', cx, 0, cz, w + 0.14, 0.9, d + 0.14, { collide: false, tile: 2 })
+    // Cornice doubles as the roof: its top sits above the body so the two never z-fight.
+    this.box(`trim${style}`, cx, h - 0.55, cz, w + 0.4, 0.75, d + 0.4, { collide: false, tile: 2 })
+    this.box(`trim${style}`, cx, h * 0.55, cz, w + 0.18, 0.18, d + 0.18, { collide: false, tile: 2 })
+    // Windows/doors on the four faces (skipping faces flush with the perimeter wall).
+    const faces: { along: 'x' | 'z'; at: number; from: number; to: number; normal: number }[] = [
+      { along: 'x', at: z0, from: x0, to: x1, normal: -1 },
+      { along: 'x', at: z1, from: x0, to: x1, normal: 1 },
+      { along: 'z', at: x0, from: z0, to: z1, normal: -1 },
+      { along: 'z', at: x1, from: z0, to: z1, normal: 1 },
     ]
-    for (const b of barriers) this.barrier(...b)
-    // Concrete blast walls (reefer-plug bays) in two corners, low walls in the other two.
-    this.box('wall', -30, 1.6, -27, 9, 3.2, 0.5)
-    this.box('wall', -25.75, 1.6, -31.5, 0.5, 3.2, 4.5)
-    this.box('wall', 30, 1.6, 27, 9, 3.2, 0.5)
-    this.box('wall', 25.75, 1.6, 31.5, 0.5, 3.2, 4.5)
-    this.box('wall', 31, 0.55, -30.5, 7, 1.1, 0.5)
-    this.box('wall', -31, 0.55, 30.5, 7, 1.1, 0.5)
-    this.box('wall', 34, 0.55, -24, 0.5, 1.1, 5)
-    this.box('wall', -34, 0.55, 24, 0.5, 1.1, 5)
-    for (const [x, z] of [[-30, -27], [30, 27]]) this.box('rust', x, 3.25, z, 9.2, 0.1, 0.7, { collide: false, tile: 2 })
-    // Sodium yard lights on short poles at the ramp feet (the only real point lights in the yard).
-    for (const [x, z] of [[-7, -14.5], [7, 14.5]] as const) {
-      this.box('steel', x, 3.4, z, 0.22, 6.8, 0.22, { surface: 'metal' })
-      this.box('steel', x + Math.sign(-x) * 0.8, 6.75, z, 1.7, 0.12, 0.14, { collide: false, tile: 1 })
-      this.box('darkMetal', x + Math.sign(-x) * 1.55, 6.62, z, 0.7, 0.2, 0.36, { collide: false, tile: 1 })
-      const lens = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.28), new THREE.MeshBasicMaterial({ color: '#ffc27a' }))
-      lens.rotation.x = Math.PI / 2
-      lens.position.set(x + Math.sign(-x) * 1.55, 6.51, z)
-      this.group.add(lens)
-      const light = new THREE.PointLight('#ffb766', 30, 26, 1.6)
-      light.position.set(x + Math.sign(-x) * 1.55, 6.2, z)
-      this.group.add(light)
-      this.lamps.push(light)
-    }
-  }
-
-  // ─── north quay: fence, apron, rails, quay wall, water, ship ───────────
-  private buildQuay(): void {
-    // Security fence along the open north side (z = 40): galvanised posts, rails, chain link.
-    const fz = HALF + 0.15
-    const fh = 3.6
-    for (let x = -HALF; x <= HALF; x += 2.5) this.box('steel', x, fh / 2, fz, 0.09, fh, 0.09, { collide: false, tile: 1 })
-    for (const y of [0.12, fh - 0.05]) this.pipe(0, y, fz, HALF * 2, 0, 'steel', 0.035)
-    const link = new THREE.PlaneGeometry(HALF * 2, fh - 0.15)
-    const uv = link.getAttribute('uv') as THREE.BufferAttribute
-    for (let i = 0; i < uv.count; i += 1) uv.setXY(i, uv.getX(i) * HALF * 2 * 7, uv.getY(i) * (fh - 0.15) * 7)
-    this.queue('fence', link, new THREE.Matrix4().makeTranslation(0, fh / 2 + 0.05, fz))
-    // Barbed outrigger.
-    for (let x = -HALF; x <= HALF; x += 2.5) this.box('steel', x, fh + 0.22, fz + 0.18, 0.05, 0.5, 0.05, { collide: false, tile: 1, rotX: 0.6 })
-    for (const dz of [0.12, 0.3]) this.pipe(0, fh + 0.2 + dz, fz + dz * 0.9, HALF * 2, 0, 'steel', 0.012)
-    this.collider(0, 4, fz, HALF * 2 + 2, 8, 0.3, 0, 'metal')
-    // Jersey barriers along the fence line outside (sightline texture).
-    for (let x = -36; x <= 36; x += 6) this.barrier(x, fz + 1.4, 90)
-    // STS crane rails (two pairs) and painted apron lanes.
-    for (const rz of [50.2, 78.2]) for (const d of [-0.4, 0.4]) this.box('steel', 0, 0.04, rz + d, 340, 0.08, 0.12, { collide: false, tile: 2 })
-    // Quay wall, coping, fenders, bollards.
-    const qz = 86
-    this.box('wall', 0, -2, qz + 0.6, 340, 4.2, 1.2, { collide: false, tile: 4 })
-    this.box('wall', 0, 0.12, qz + 0.4, 340, 0.24, 1.0, { collide: false, tile: 2 })
-    for (let x = -165; x <= 165; x += 11) {
-      this.box('darkMetal', x, -1.1, qz + 1.35, 1.3, 2.2, 0.4, { collide: false, tile: 1 })
-      const b = new THREE.CylinderGeometry(0.22, 0.28, 0.6, 12)
-      this.queue('darkMetal', b, new THREE.Matrix4().makeTranslation(x + 5.5, 0.3, qz - 0.2))
-    }
-    // Harbour water: dark, low-glare, animated normals.
-    const waterGeo = new THREE.PlaneGeometry(700, 500)
-    waterGeo.rotateX(-Math.PI / 2)
-    const wn = waterNormalTexture()
-    wn.repeat.set(70, 50)
-    const water = new THREE.MeshStandardMaterial({ color: '#141d21', roughness: 0.2, metalness: 0, normalMap: wn, envMapIntensity: 0.55 })
-    water.normalScale.set(0.55, 0.55)
-    this.water.mat = water
-    const wmesh = new THREE.Mesh(waterGeo, water)
-    wmesh.position.set(0, -2.4, qz + 250)
-    wmesh.receiveShadow = false
-    this.group.add(wmesh)
-    this.buildShip(108)
-  }
-
-  private buildShip(cz: number): void {
-    const shape = new THREE.Shape()
-    const pts: [number, number][] = [[-104, -10], [-100, -16], [78, -16], [96, -10], [106, 0], [96, 10], [78, 16], [-100, 16], [-104, 10]]
-    shape.moveTo(pts[0][0], pts[0][1])
-    for (const p of pts.slice(1)) shape.lineTo(p[0], p[1])
-    shape.closePath()
-    const hullH = 15
-    const hull = new THREE.ExtrudeGeometry(shape, { depth: hullH, bevelEnabled: false })
-    const uvs = hull.getAttribute('uv') as THREE.BufferAttribute
-    for (let i = 0; i < uvs.count; i += 1) uvs.setXY(i, uvs.getX(i) / 6, uvs.getY(i) / 6)
-    hull.rotateX(-Math.PI / 2)
-    this.queue('hull', hull, new THREE.Matrix4().makeTranslation(0, -9, cz))
-    // Accommodation block and funnel at the stern.
-    this.box('house', -84, 6 + 13, cz, 14, 26, 26, { collide: false, tile: 3 })
-    this.box('house', -84, 6 + 26.6, cz, 16, 1.2, 34, { collide: false, tile: 3 })
-    this.box('hull', -95, 6 + 16, cz, 6, 20, 8, { collide: false, tile: 3 })
-    // Bridge windows: a faint warm strip (low emission, no bloom glare).
-    const win = new THREE.Mesh(new THREE.PlaneGeometry(25, 1.1), new THREE.MeshBasicMaterial({ color: '#6f5c40', fog: true }))
-    win.rotation.y = -Math.PI / 2
-    win.position.set(-91.05, 6 + 24, cz)
-    this.group.add(win)
-    // Deck cargo: instanced 40 ft boxes, bays forward of the house.
-    const mats: THREE.Matrix4[] = []
-    const colors: THREE.Color[] = []
-    for (let bx = -66; bx <= 84; bx += 12.7) {
-      const rows = bx > 70 ? 8 : 12
-      for (let r = 0; r < rows; r += 1) {
-        const z = cz - ((rows - 1) * 2.5) / 2 + r * 2.5
-        const tiers = 2 + Math.floor(this.rand() * 5)
-        for (let t = 0; t < tiers; t += 1) {
-          mats.push(new THREE.Matrix4().makeTranslation(bx, 6 + CONT_H / 2 + t * CONT_H, z))
-          colors.push(new THREE.Color(CONTAINER_COLORS[Math.floor(this.rand() * CONTAINER_COLORS.length)]))
-        }
+    for (const f of faces) {
+      if ((f.along === 'z' && Math.abs(Math.abs(f.at) - HALF_X) < 0.5) || (f.along === 'x' && Math.abs(Math.abs(f.at) - HALF_Z) < 0.5)) continue
+      const len = f.to - f.from
+      const n = Math.max(1, Math.floor(len / 4.2))
+      const step = len / n
+      for (let i = 0; i < n; i += 1) {
+        const t = f.from + step * (i + 0.5)
+        const door = i % 3 === 1 && len > 10
+        const ww = door ? 1.5 : 1.3
+        const wh = door ? 2.5 : 1.7
+        const wy = door ? wh / 2 : h * 0.55 + 1.35
+        if (door && i % 6 !== 1) continue
+        this.facade(f.along, f.at, t, wy, ww, wh, f.normal, door)
+        if (!door && h > 7.2) this.facade(f.along, f.at, t, h * 0.3, ww, 1.4, f.normal, false)
       }
     }
-    this.instancedBoxes(mats, colors, false)
+    this.minimap.push({ x0, x1, z0, z1, kind: 'building' })
   }
 
-  /** Low-detail instanced 40 ft containers for the skyline (no colliders, no shadows). */
-  private instancedBoxes(mats: THREE.Matrix4[], colors: THREE.Color[], alongZ: boolean): void {
-    if (!this.mats.farCont) {
-      const m = pbr(this.lib.sets.corrugated_iron_02, { color: '#ffffff', metalness: 0.3, normalScale: 0.8, envMapIntensity: 0.3 })
-      applyGrime(m, { amount: 0.9, foot: 0.6 })
-      this.mats.farCont = m
+  /** Framed window or door slightly proud of a wall face. */
+  private facade(along: 'x' | 'z', at: number, t: number, y: number, w: number, h: number, normal: number, door: boolean): void {
+    const off = 0.04 * normal
+    const pos = along === 'x' ? new THREE.Vector3(t, y, at + off) : new THREE.Vector3(at + off, y, t)
+    const rot = along === 'x' ? (normal > 0 ? 0 : Math.PI) : normal > 0 ? Math.PI / 2 : -Math.PI / 2
+    const m = new THREE.Matrix4().compose(pos, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot), new THREE.Vector3(1, 1, 1))
+    const frame = worldBox(w + 0.3, h + 0.3, 0.06, 4)
+    this.queue('frame', frame, m)
+    const pane = worldBox(w, h, 0.08, 4)
+    this.queue(door ? 'crate' : 'window', pane, m)
+  }
+
+  /** Cover piece; crates get plank texture, planters are stone, generators are metal with a trim band. */
+  private cover(x: number, z: number, w: number, d: number, h: number, kind: number): void {
+    if (kind === 0) {
+      // Stacked crates: bottom crate when h > 1.6 is drawn as two boxes.
+      const unit = Math.min(1.6, h)
+      this.box('crate', x, 0, z, w, unit, d, { tile: 1.6, surface: 'wood' })
+      if (h > unit + 0.1) this.box('crate', x + 0.1, unit, z - 0.08, w * 0.9, h - unit, d * 0.9, { tile: 1.6, surface: 'wood' })
+    } else if (kind === 1) {
+      this.box('stone', x, 0, z, w, h, d, { tile: 2 })
+      this.box('trim1', x, h - 0.12, z, w + 0.12, 0.2, d + 0.12, { collide: false, tile: 2 })
+    } else {
+      this.box('metal', x, 0, z, w, h, d, { tile: 2, surface: 'metal' })
+      this.box('trim0', x, h * 0.6, z, w + 0.06, 0.25, d + 0.06, { collide: false, tile: 2 })
+      this.box('base', x, h, z, w * 0.6, 0.3, d * 0.6, { collide: false, tile: 2 })
     }
-    const g = alongZ ? worldBox(CONT_W, CONT_H, CONT_L[40], 2.6) : worldBox(CONT_L[40], CONT_H, CONT_W, 2.6)
-    const mesh = new THREE.InstancedMesh(g, this.mats.farCont, mats.length)
-    mats.forEach((m, i) => {
-      mesh.setMatrixAt(i, m)
-      mesh.setColorAt(i, colors[i])
-    })
-    mesh.instanceMatrix.needsUpdate = true
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
-    mesh.computeBoundingSphere()
-    mesh.castShadow = false
-    mesh.receiveShadow = true
+    this.minimap.push({ x0: x - w / 2, x1: x + w / 2, z0: z - d / 2, z1: z + d / 2, kind: 'cover' })
+  }
+
+  private buildSites(): void {
+    const defs: [SiteId, number, number, string][] = [['A', -31, -24, '#ff6b5a'], ['B', 31, -24, '#ffb648']]
+    for (const [id, x, z, color] of defs) {
+      const site: Site = { id, center: new THREE.Vector3(x, 0, z), halfX: 9.5, halfZ: 8.5, color }
+      this.sites.push(site)
+      // Painted plant zone on the floor (tile atlas: letter cell per site).
+      const m = new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition(x, 0.02, z)
+      const g = new THREE.PlaneGeometry(site.halfX * 2, site.halfZ * 2)
+      const uv = g.getAttribute('uv') as THREE.BufferAttribute
+      for (let i = 0; i < uv.count; i += 1) uv.setX(i, uv.getX(i) * 0.5 + (id === 'A' ? 0 : 0.5))
+      this.queue('paint', g, m)
+      // Big site letter on the nearest building wall facing the plaza.
+      const wallX = id === 'A' ? -16 : 16
+      const sign = new THREE.PlaneGeometry(3.4, 3.4)
+      const suv = sign.getAttribute('uv') as THREE.BufferAttribute
+      for (let i = 0; i < suv.count; i += 1) suv.setX(i, suv.getX(i) * 0.5 + (id === 'A' ? 0 : 0.5))
+      const sm = new THREE.Matrix4().compose(new THREE.Vector3(wallX + (id === 'A' ? -0.08 : 0.08), 4.2, -25), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), id === 'A' ? -Math.PI / 2 : Math.PI / 2), new THREE.Vector3(1, 1, 1))
+      this.queue('paint', sign, sm)
+    }
+  }
+
+  // ─── spawn barriers (buy phase) ────────────────────────────────────────
+  private barrier(side: TeamSide, z: number): void {
+    const w = HALF_X * 2
+    const h = 6
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), this.barrierMat)
+    const uv = mesh.geometry.getAttribute('uv') as THREE.BufferAttribute
+    for (let i = 0; i < uv.count; i += 1) uv.setXY(i, (uv.getX(i) * w) / 3, (uv.getY(i) * h) / 3)
+    mesh.position.set(0, h / 2, z)
+    mesh.visible = false
+    mesh.renderOrder = 3
     this.group.add(mesh)
+    const collider = this.collider(0, h / 2, z, w, h, 0.3, 'metal')
+    collider.setEnabled(false)
+    this.barriers.push({ side, collider, mesh })
   }
 
-  /** Container stacks beyond the walls on the land sides, with idle RTGs straddling two blocks. */
-  private buildBackdropStacks(): void {
-    const mats: THREE.Matrix4[] = []
-    const colors: THREE.Color[] = []
-    const matsZ: THREE.Matrix4[] = []
-    const colorsZ: THREE.Matrix4[] | THREE.Color[] = []
-    const block = (bx: number, bz: number, bays: number, rows: number, alongZ: boolean) => {
-      for (let b = 0; b < bays; b += 1) {
-        for (let r = 0; r < rows; r += 1) {
-          const tiers = 1 + Math.floor(this.rand() * 5)
-          for (let t = 0; t < tiers; t += 1) {
-            const a = b * 12.6
-            const c = r * 2.55
-            const x = alongZ ? bx + c : bx + a
-            const z = alongZ ? bz + a : bz + c
-            const m = new THREE.Matrix4().makeTranslation(x, CONT_H / 2 + t * CONT_H, z)
-            const col = new THREE.Color(CONTAINER_COLORS[Math.floor(this.rand() * CONTAINER_COLORS.length)])
-            if (alongZ) {
-              matsZ.push(m)
-              ;(colorsZ as THREE.Color[]).push(col)
-            } else {
-              mats.push(m)
-              colors.push(col)
-            }
-          }
-        }
-      }
-    }
-    for (const bz of [-58, -84, -110]) for (const bx of [-140, -50, 40]) block(bx, bz, 7, 6, false)
-    for (const bx of [52, 78, 104]) for (const bz of [-36, 6]) block(bx, bz, 3, 6, true)
-    for (const bx of [-67, -93, -119]) for (const bz of [-36, 6]) block(bx, bz, 3, 6, true)
-    this.instancedBoxes(mats, colors, false)
-    this.instancedBoxes(matsZ, colorsZ as THREE.Color[], true)
-    // Idle RTGs over the southern blocks (visual only).
-    for (const [x, z] of [[-7, -51.6], [62, -77.6]] as const) this.rtg(new THREE.Vector3(x, 0, z), 0, false)
-  }
-
-  // ─── props from models ─────────────────────────────────────────────────
-  private model(id: ModelId, pos: THREE.Vector3, rotY: number, scale: number, collide: boolean, surface: Surface, shadow = true): THREE.Object3D {
-    const src = this.lib.models[id].scene
-    const obj = src.clone(true)
-    obj.scale.setScalar(scale)
-    obj.position.copy(pos)
-    obj.rotation.y = rotY
-    obj.traverse(o => {
-      const m = o as THREE.Mesh
-      if (m.isMesh) {
-        m.castShadow = shadow
-        m.receiveShadow = true
-      }
-    })
-    this.group.add(obj)
-    if (collide) {
-      obj.updateMatrixWorld(true)
-      const local = new THREE.Box3().setFromObject(src)
-      const size = local.getSize(new THREE.Vector3()).multiplyScalar(scale)
-      const center = local.getCenter(new THREE.Vector3()).multiplyScalar(scale).applyAxisAngle(UP, rotY).add(pos)
-      this.collider(center.x, center.y, center.z, size.x, size.y, size.z, rotY, surface)
-    }
-    return obj
-  }
-
-  /** Grounded scan placement: returns the y offset applied so colliders can use the same frame. */
-  private grounded(id: ModelId, pos: THREE.Vector3, rotY: number, scale: number, shadow = true): number {
-    const min = new THREE.Box3().setFromObject(this.lib.models[id].scene).min.y
-    const y = pos.y - min * scale
-    this.model(id, new THREE.Vector3(pos.x, y, pos.z), rotY, scale, false, 'metal', shadow)
-    return y
-  }
-
-  /**
-   * RTG crane (Tripo scan, s = 26 → 25 m tall, 26 m span). Span runs along local Z. Colliders are
-   * the measured end frames (two legs each) and the wheel bogies, so the gantry stays walk-through.
-   */
-  private rtg(pos: THREE.Vector3, rotY: number, collide: boolean): void {
-    const s = 26
-    const y = this.grounded('rtg_crane', pos, rotY, s, collide)
-    if (!collide) return
-    const base = new THREE.Vector3(pos.x, 0, pos.z)
-    for (const sz of [-1, 1]) {
-      const z0 = sz > 0 ? 0.38 : -0.5
-      const z1 = sz > 0 ? 0.5 : -0.38
-      this.scanCollider(base, rotY, s, y, [-0.238, -0.485, sz > 0 ? 0.379 : -0.454], [0.238, -0.388, sz > 0 ? 0.453 : -0.38], 'metal')
-      for (const sx of [-1, 1]) this.scanCollider(base, rotY, s, y, sx > 0 ? [0.075, -0.39, z0] : [-0.215, -0.39, z0], sx > 0 ? [0.215, 0.242, z1] : [-0.075, 0.242, z1], 'metal')
+  /** Raise/lower the buy-phase walls in front of each spawn. */
+  setBarriers(on: boolean): void {
+    for (const b of this.barriers) {
+      b.mesh.visible = on
+      b.collider.setEnabled(on)
     }
   }
 
-  private placeModels(): void {
-    // Central landmark: RTG straddling the deck, span along world X (end frames at x ≈ ±10..13).
-    this.rtg(new THREE.Vector3(0, 0, 0), Math.PI / 2, true)
-    // Reach stackers as heavy cover (point-symmetric), chassis collider from the measured scan.
-    for (const s of [1, -1]) {
-      const pos = new THREE.Vector3(-27.5 * s, 0, 4.5 * s)
-      const rot = s > 0 ? Math.PI / 2 : (3 * Math.PI) / 2
-      const y = this.grounded('reach_stacker', pos, rot, 12)
-      this.scanCollider(new THREE.Vector3(pos.x, 0, pos.z), rot, 12, y, [-0.45, -0.311, -0.183], [0.36, -0.02, 0.183], 'metal')
-    }
-    const crate = (x: number, y: number, z: number, rot: number, stack = 2) => {
-      for (let s = 0; s < stack; s += 1) this.model('wooden_military_crate', new THREE.Vector3(x, y + s * 0.63, z), rot + (s ? 0.06 : 0), 1.35, true, 'wood')
-    }
-    crate(16.5, 0, -3, Math.PI / 2)
-    crate(-16.5, 0, 3, Math.PI / 2)
-    crate(-3.6, 1.6, -3.4, 0.2, 1)
-    crate(3.6, 1.6, 3.4, 0.2, 1)
-    crate(-26, 0, -10.5, 0)
-    crate(26, 0, 10.5, 0)
-    crate(-8, 0, -35.5, 0.1)
-    crate(8, 0, 35.5, -0.1)
-    crate(35.5, 0, 34, Math.PI / 2, 1)
-    crate(-35.5, 0, -34, Math.PI / 2, 1)
-    crate(-17, 0, 24.5, 0.4, 1)
-    crate(17, 0, -24.5, 0.4, 1)
-    const cover = (id: 'jersey_barrier' | 'sandbags', x: number, z: number, rot: number, scale: number) => {
-      const min = new THREE.Box3().setFromObject(this.lib.models[id].scene).min.y
-      this.model(id, new THREE.Vector3(x, -min * scale, z), rot, scale, true, 'concrete')
-    }
-    for (const s of [1, -1]) {
-      cover('jersey_barrier', -19.5 * s, -27.5 * s, 0, 2.7)
-      cover('sandbags', 0.5 * s, -20.5 * s, Math.PI / 2, 3.2)
-      cover('sandbags', -24.5 * s, 33.5 * s, 0.35, 3.2)
-    }
-    // Reefer/electrical cabinets against the container walls.
-    for (const [x, z, r] of [[-12, -39.3, 0], [22, -39.3, 0], [-39.3, -18, Math.PI / 2], [39.3, 18, -Math.PI / 2], [-39.3, 26, Math.PI / 2], [39.3, -26, -Math.PI / 2]] as const) {
-      this.model('utility_box_02', new THREE.Vector3(x, 0, z), r, 1.3, true, 'metal')
-    }
-    // Container-mounted security lights (visual).
-    for (const [x, z, r] of [[-18, -39.5, 0], [18, -39.5, 0], [-39.5, 12, Math.PI / 2], [39.5, -12, -Math.PI / 2]] as const) {
-      this.model('security_light', new THREE.Vector3(x, 5.5, z), r, 2, false, 'metal')
-    }
-    // Workers' burn barrels (non-explosive decor) with flickering ground glow.
-    for (const [x, z] of [[-36.5, 21], [36.5, -21]] as const) {
-      this.model('barrel_03', new THREE.Vector3(x, 0, z), 0, 1, true, 'metal')
-      const glow = new THREE.MeshBasicMaterial({ map: fireGlowTexture(), color: '#ff7a2a', transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
-      const pool = new THREE.Mesh(new THREE.PlaneGeometry(9, 9), glow)
-      pool.rotation.x = -Math.PI / 2
-      pool.position.set(x, 0.03, z)
-      pool.renderOrder = 3
-      this.group.add(pool)
-      this.fires.push({ pos: new THREE.Vector3(x, 0.95, z), glow })
-    }
-    // High-mast floodlights at the yard corners (housings + soft panels; no real lights).
-    const glowMat = new THREE.MeshBasicMaterial({ color: '#d9c7a4', fog: true })
-    for (const [x, z] of [[-47, -47], [47, -47], [-47, 47], [47, 47]] as const) {
-      this.queue('steel', worldBox(0.9, 34, 0.9, 2), new THREE.Matrix4().makeTranslation(x, 17, z))
-      this.queue('steel', new THREE.TorusGeometry(2.2, 0.12, 6, 20).rotateX(Math.PI / 2), new THREE.Matrix4().makeTranslation(x, 34, z))
-      for (let k = 0; k < 6; k += 1) {
-        const a = (k / 6) * Math.PI * 2
-        const head = new THREE.Mesh(worldBox(0.9, 0.5, 0.3, 1), this.mats.darkMetal)
-        head.position.set(x + Math.cos(a) * 2.2, 33.6, z + Math.sin(a) * 2.2)
-        head.lookAt(0, 0, 0)
-        const lens = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.4), glowMat)
-        lens.position.copy(head.position)
-        lens.quaternion.copy(head.quaternion)
-        lens.translateZ(0.16)
-        this.group.add(head, lens)
-      }
-    }
-    this.flush()
-  }
-
-  /** Stage 2: ship-to-shore cranes along the quay (backdrop, no colliders). */
-  attachSts(scene: THREE.Object3D): void {
-    if (this.stsAttached) return
-    this.stsAttached = true
-    const s = 80
-    const min = new THREE.Box3().setFromObject(scene).min.y
-    for (const [x, shadow] of [[-58, false], [0, true], [58, false]] as const) {
-      const obj = scene.clone(true)
-      obj.scale.setScalar(s)
-      obj.position.set(x, -min * s, 74)
-      obj.rotation.y = Math.PI
-      obj.traverse(o => {
-        const m = o as THREE.Mesh
-        if (m.isMesh) {
-          m.castShadow = shadow
-          m.receiveShadow = true
-          m.matrixAutoUpdate = false
-        }
-      })
-      obj.updateMatrixWorld(true)
-      this.group.add(obj)
-    }
-  }
-
-  /** Drizzle streaks that follow the camera. density 0 disables (low quality). */
-  attachCamera(camera: THREE.Camera, density: number): void {
-    this.camera = camera
-    this.setRainDensity(density)
-  }
-
-  setRainDensity(density: number): void {
-    const max = 3200
-    if (!this.rain) {
-      const seeds = new Float32Array(max * 2 * 4)
-      for (let i = 0; i < max; i += 1) {
-        const x = Math.random()
-        const y = Math.random()
-        const z = Math.random()
-        seeds.set([x, y, z, 0, x, y, z, 1], i * 8)
-      }
-      const g = new THREE.BufferGeometry()
-      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(max * 2 * 3), 3))
-      g.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 4))
-      const mat = new THREE.ShaderMaterial({
-        uniforms: { uCam: { value: new THREE.Vector3() }, uTime: this.timeUniform },
-        vertexShader: `
-          attribute vec4 aSeed; uniform vec3 uCam; uniform float uTime; varying float vA;
-          void main() {
-            vec3 box = vec3(34.0, 20.0, 34.0);
-            vec3 vel = vec3(1.1, -11.0, 0.6);
-            vec3 p = aSeed.xyz * box + vel * uTime * (0.85 + aSeed.x * 0.3);
-            p = mod(p - uCam + vec3(box.x * 0.5, 4.0, box.z * 0.5), box) - vec3(box.x * 0.5, 4.0, box.z * 0.5) + uCam;
-            p -= normalize(vel) * aSeed.w * (0.35 + aSeed.z * 0.25);
-            vA = (1.0 - aSeed.w * 0.9) * smoothstep(0.0, 3.0, length(p - uCam));
-            gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
-          }`,
-        fragmentShader: `varying float vA; void main() { gl_FragColor = vec4(0.72, 0.76, 0.8, 0.2 * vA); }`,
-        transparent: true,
-        depthWrite: false,
-      })
-      const mesh = new THREE.LineSegments(g, mat)
-      mesh.frustumCulled = false
-      mesh.renderOrder = 4
-      this.rain = { mesh, mat, max }
-      this.scene.add(mesh)
-    }
-    const n = Math.round(this.rain.max * Math.max(0, Math.min(1, (density - 0.5) / 0.5 + 0.0001)))
-    this.rain.mesh.visible = n > 0
-    this.rain.mesh.geometry.setDrawRange(0, n * 2)
+  /** Which site (if any) contains a point. */
+  siteAt(p: THREE.Vector3): Site | undefined {
+    return this.sites.find(s => Math.abs(p.x - s.center.x) <= s.halfX && Math.abs(p.z - s.center.z) <= s.halfZ)
   }
 
   // ─── navigation ────────────────────────────────────────────────────────
   private bakeNav(): NavGrid {
-    const nav = new NavGrid(80, 80, 1, -HALF, -HALF)
+    const nav = new NavGrid(HALF_X * 2, HALF_Z * 2, 1, -HALF_X, -HALF_Z)
     const world = this.physics.world
     const ray = new RAPIER.Ray({ x: 0, y: 4.5, z: 0 }, { x: 0, y: -1, z: 0 })
     const sample = (x: number, z: number): { h: number; ny: number } => {
@@ -733,10 +395,10 @@ export class Arena {
     const r = 0.5
     for (let cz = 0; cz < nav.rows; cz += 1) {
       for (let cx = 0; cx < nav.cols; cx += 1) {
-        const x = -HALF + cx + 0.5
-        const z = -HALF + cz + 0.5
+        const x = -HALF_X + cx + 0.5
+        const z = -HALF_Z + cz + 0.5
         const c = sample(x, z)
-        let ok = c.h !== BLOCKED && c.h < 3 && c.ny > 0.8 && Math.abs(x) < HALF - 1 && Math.abs(z) < HALF - 1
+        let ok = c.h !== BLOCKED && c.h < 0.5 && c.ny > 0.8 && Math.abs(x) < HALF_X - 1.2 && Math.abs(z) < HALF_Z - 1.2
         if (ok) {
           for (const [dx, dz] of [[r, 0], [-r, 0], [0, r], [0, -r], [r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]]) {
             const s = sample(x + dx, z + dz)
@@ -753,28 +415,35 @@ export class Arena {
     return nav
   }
 
+  private snap(x: number, z: number): THREE.Vector3 {
+    const i = this.nav.nearest(x, z, 6)
+    const c = i >= 0 ? this.nav.center(i) : { x, z }
+    return new THREE.Vector3(c.x, i >= 0 ? this.nav.heights[i] : 0, c.z)
+  }
+
   private defineSpots(): void {
     const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
-    const spawnXZ: [number, number][] = [
-      [-36, -16], [36, 16], [-18, -36], [18, 36], [-36, 8], [36, -8], [10, -36], [-10, 36], [-22, 27], [22, -27], [-30, -33], [30, 33],
+    const ffa: [number, number][] = [
+      [-41, -44], [41, -44], [-34, 10], [34, 10], [-41, -22], [41, -22], [0, -44], [0, 44],
+      [-36, 42], [36, 42], [0, 12], [-20, -10], [20, -10], [-30, 30], [30, 30], [0, -26],
     ]
-    for (const [x, z] of spawnXZ) {
-      const i = this.nav.nearest(x, z, 6)
-      const c = i >= 0 ? this.nav.center(i) : { x, z }
-      this.spawns.push(v(c.x, i >= 0 ? this.nav.heights[i] : 0, c.z))
+    for (const [x, z] of ffa) this.spawns.push(this.snap(x, z))
+    for (let i = 0; i < 5; i += 1) {
+      const x = (i - 2) * 3.2
+      this.teamSpawns.attack.push(this.snap(x, 43 + (i % 2) * 2))
+      this.teamSpawns.defend.push(this.snap(x, -44 - (i % 2) * 2))
     }
+    const hot: [number, number][] = [[-31, -20], [31, -20], [0, 0], [0, -24], [-34, 10], [34, 10], [-12, -10], [12, -10], [-30, 32], [30, 32], [0, 30], [-30, -44], [30, -44]]
+    for (const [x, z] of hot) this.hotspots.push(this.snap(x, z))
     const barrels: [number, number, PropSpot['model']][] = [
-      [-12, -18.5, 'barrel'], [-11.2, -19.3, 'barrel'], [12, 18.5, 'barrel'], [11.2, 19.3, 'barrel'],
-      [-31, -13, 'barrel'], [-31.8, -13.8, 'propane'], [31, 13, 'barrel'], [31.8, 13.8, 'propane'],
-      [16, -31.5, 'barrel'], [-16, 31.5, 'barrel'], [-3, -15.6, 'propane'], [3, 15.6, 'propane'],
-      [-24.2, -32, 'barrel'], [24.2, 32, 'barrel'], [5.5, -8.4, 'barrel'], [-5.5, 8.4, 'barrel'],
+      [-36.5, 15, 'barrel'], [36.5, 15, 'barrel'], [-6.2, 16, 'propane'], [6.2, -12, 'barrel'], [-43, -36, 'barrel'], [43, -36, 'propane'],
     ]
-    for (const [x, z, model] of barrels) this.props.push({ pos: v(x, 0, z), model, rot: Math.random() * Math.PI * 2 })
+    for (const [x, z, model] of barrels) this.props.push({ pos: v(x, 0, z), model, rot: (x * 7.1 + z) % (Math.PI * 2) })
     const pick: [number, number, number, PickupSpot['kind']][] = [
-      [-31, 0, -1, 'health'], [31, 0, 1, 'health'], [0, 0, -36, 'health'], [0, 0, 36, 'health'],
-      [-30, 0, -31, 'armor'], [30, 0, 31, 'armor'],
-      [-20, 0, 8, 'ammo'], [20, 0, -8, 'ammo'], [-9, 0, 26, 'ammo'], [9, 0, -26, 'ammo'],
-      [0, 1.6, 0, 'rocket'],
+      [-34, 0, 12, 'health'], [34, 0, 12, 'health'], [0, 0, -30, 'health'], [0, 0, 32, 'health'],
+      [-30, 0, -40, 'armor'], [30, 0, -40, 'armor'],
+      [-20, 0, 32, 'ammo'], [20, 0, 32, 'ammo'], [-12, 0, -44, 'ammo'], [12, 0, -44, 'ammo'],
+      [0, 0, 1, 'rocket'],
     ]
     for (const [x, y, z, kind] of pick) this.pickups.push({ pos: v(x, y, z), kind })
   }
@@ -785,110 +454,156 @@ export class Arena {
     return hit ? fromY - hit.timeOfImpact : 0
   }
 
+  // Old-yard hooks (no crane skyline or rain on this map).
+  attachSts(scene: THREE.Object3D): void {
+    void scene
+  }
+  attachCamera(camera: THREE.Camera, density: number): void {
+    void camera
+    void density
+  }
+  setRainDensity(density: number): void {
+    void density
+  }
+
   update(time: number): void {
-    this.timeUniform.value = time
-    for (const f of this.fires) f.glow.opacity = 0.62 + Math.sin(time * 17) * 0.08 + Math.sin(time * 7.3) * 0.1 + Math.random() * 0.08
-    if (this.water.mat?.normalMap) this.water.mat.normalMap.offset.set(time * 0.004, time * 0.0065)
-    if (this.rain && this.camera) this.camera.getWorldPosition((this.rain.mat.uniforms.uCam.value as THREE.Vector3))
+    this.time = time
+    const map = this.barrierMat.map
+    if (map && this.barriers[0]?.mesh.visible) map.offset.y = -this.time * 0.25
   }
 }
 
-// ─── canvas textures ─────────────────────────────────────────────────────
+// ─── canvas textures (tiny: they only add painted variation to flat colours) ───
 
-/**
- * Yard paint/joint mask over the 80 × 80 m slab, 25.6 px/m. Channels: R yellow paint, G white
- * paint, B slab joints/cracks/oil. flipY off so canvas (px, py) = ((x + 40) * 25.6, (z + 40) * 25.6).
- */
-function chainLinkTexture(): THREE.CanvasTexture {
+function canvasTex(size: number, draw: (g: CanvasRenderingContext2D, s: number) => void, color = true): THREE.CanvasTexture {
   const c = document.createElement('canvas')
-  c.width = c.height = 64
-  const g = c.getContext('2d')!
-  g.clearRect(0, 0, 64, 64)
-  g.strokeStyle = 'rgba(255,255,255,1)'
-  g.lineWidth = 4
-  g.beginPath()
-  g.moveTo(0, 32)
-  g.lineTo(32, 0)
-  g.lineTo(64, 32)
-  g.lineTo(32, 64)
-  g.closePath()
-  g.stroke()
+  c.width = c.height = size
+  draw(c.getContext('2d')!, size)
   const t = new THREE.CanvasTexture(c)
   t.wrapS = t.wrapT = THREE.RepeatWrapping
-  t.colorSpace = THREE.SRGBColorSpace
-  t.anisotropy = 4
+  if (color) t.colorSpace = THREE.SRGBColorSpace
+  t.anisotropy = 2
   return t
 }
 
-function waterNormalTexture(): THREE.CanvasTexture {
-  const n = noiseTexture(256, 5, 8, 1.3)
-  const src = n.image as HTMLCanvasElement
-  const S = src.width
-  const h = src.getContext('2d')!.getImageData(0, 0, S, S).data
-  const c = document.createElement('canvas')
-  c.width = c.height = S
-  const g = c.getContext('2d')!
-  const img = g.createImageData(S, S)
-  const at = (x: number, y: number) => h[(((y + S) % S) * S + ((x + S) % S)) * 4] / 255
-  for (let y = 0; y < S; y += 1) {
-    for (let x = 0; x < S; x += 1) {
-      const dx = (at(x + 1, y) - at(x - 1, y)) * 3
-      const dy = (at(x, y + 1) - at(x, y - 1)) * 3
-      const l = Math.hypot(dx, dy, 1)
-      const i = (y * S + x) * 4
-      img.data[i] = ((-dx / l) * 0.5 + 0.5) * 255
-      img.data[i + 1] = ((-dy / l) * 0.5 + 0.5) * 255
-      img.data[i + 2] = (1 / l) * 0.5 * 255 + 127
-      img.data[i + 3] = 255
+function seeded(seed: number): () => number {
+  let s = seed
+  return () => ((s = (s * 16807) % 2147483647) / 2147483647)
+}
+
+/** Light hand-painted stucco: soft blotches around white, so it multiplies the material colour. */
+function stuccoTexture(): THREE.CanvasTexture {
+  return canvasTex(128, (g, s) => {
+    g.fillStyle = '#f4f4f4'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(11)
+    for (let i = 0; i < 90; i += 1) {
+      const v = 225 + Math.floor(r() * 30)
+      g.fillStyle = `rgba(${v},${v},${v - 6},0.5)`
+      g.beginPath()
+      g.arc(r() * s, r() * s, 4 + r() * 14, 0, Math.PI * 2)
+      g.fill()
     }
-  }
-  g.putImageData(img, 0, 0)
-  n.dispose()
-  const t = new THREE.CanvasTexture(c)
-  t.wrapS = t.wrapT = THREE.RepeatWrapping
-  t.colorSpace = THREE.NoColorSpace
+  })
+}
+
+/** Square stone tiles with soft grout; `street` makes long cobble rows. */
+function tileTexture(street = false): THREE.CanvasTexture {
+  return canvasTex(128, (g, s) => {
+    g.fillStyle = '#f2f0ec'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(street ? 5 : 3)
+    const n = street ? 4 : 2
+    const cell = s / n
+    for (let y = 0; y < n; y += 1) {
+      for (let x = 0; x < n; x += 1) {
+        const v = 228 + Math.floor(r() * 22)
+        g.fillStyle = `rgb(${v},${v - 2},${v - 6})`
+        const off = street && y % 2 ? cell / 2 : 0
+        g.fillRect(x * cell + off + 2, y * cell + 2, cell - 4, cell - 4)
+        if (off) g.fillRect(off - cell + 2, y * cell + 2, cell - 4, cell - 4)
+      }
+    }
+  })
+}
+
+function crateTexture(): THREE.CanvasTexture {
+  return canvasTex(128, (g, s) => {
+    g.fillStyle = '#efe4d6'
+    g.fillRect(0, 0, s, s)
+    g.fillStyle = '#d8c3a8'
+    for (let i = 0; i < 4; i += 1) g.fillRect(0, i * 32 + 30, s, 2)
+    g.strokeStyle = '#a6835e'
+    g.lineWidth = 10
+    g.strokeRect(5, 5, s - 10, s - 10)
+    g.beginPath()
+    g.moveTo(8, 8)
+    g.lineTo(s - 8, s - 8)
+    g.stroke()
+  })
+}
+
+/** Two-cell atlas: Site A (left) and Site B (right) floor paint / wall sign. */
+function sitePaintTexture(): THREE.CanvasTexture {
+  const t = canvasTex(256, (g, s) => {
+    g.clearRect(0, 0, s, s)
+    const half = s / 2
+    for (const [i, letter, col] of [[0, 'A', '#ff6b5a'], [1, 'B', '#ffb648']] as const) {
+      const x0 = i * half
+      g.strokeStyle = col
+      g.globalAlpha = 0.85
+      g.lineWidth = 6
+      g.setLineDash([14, 8])
+      g.strokeRect(x0 + 6, 6, half - 12, s - 12)
+      g.setLineDash([])
+      g.globalAlpha = 0.18
+      g.fillStyle = col
+      g.fillRect(x0 + 6, 6, half - 12, s - 12)
+      g.globalAlpha = 0.9
+      g.fillStyle = col
+      g.font = 'bold 84px sans-serif'
+      g.textAlign = 'center'
+      g.textBaseline = 'middle'
+      g.fillText(letter, x0 + half / 2, s / 2)
+    }
+    g.globalAlpha = 1
+  })
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping
   return t
 }
 
-let fireGlowTex: THREE.CanvasTexture | undefined
-function fireGlowTexture(): THREE.CanvasTexture {
-  if (fireGlowTex) return fireGlowTex
-  const c = document.createElement('canvas')
-  c.width = c.height = 128
-  const g = c.getContext('2d')!
-  const r = g.createRadialGradient(64, 64, 0, 64, 64, 64)
-  r.addColorStop(0, 'rgba(255,255,255,0.9)')
-  r.addColorStop(0.35, 'rgba(255,255,255,0.35)')
-  r.addColorStop(1, 'rgba(255,255,255,0)')
-  g.fillStyle = r
-  g.fillRect(0, 0, 128, 128)
-  fireGlowTex = new THREE.CanvasTexture(c)
-  fireGlowTex.colorSpace = THREE.SRGBColorSpace
-  return fireGlowTex
+function barrierTexture(): THREE.CanvasTexture {
+  return canvasTex(64, (g, s) => {
+    g.clearRect(0, 0, s, s)
+    g.strokeStyle = 'rgba(255,255,255,0.9)'
+    g.lineWidth = 3
+    g.beginPath()
+    for (let i = -s; i < s * 2; i += 16) {
+      g.moveTo(i, 0)
+      g.lineTo(i + s, s)
+    }
+    g.stroke()
+    g.fillStyle = 'rgba(255,255,255,0.12)'
+    g.fillRect(0, 0, s, s)
+  })
 }
 
-function hazardTexture(): THREE.CanvasTexture {
+/** Vertical sky gradient mapped equirectangularly (zenith blue → warm haze at the horizon). */
+function skyTexture(): THREE.CanvasTexture {
   const c = document.createElement('canvas')
-  c.width = 256
-  c.height = 64
-  const ctx = c.getContext('2d')!
-  ctx.fillStyle = '#d9a514'
-  ctx.fillRect(0, 0, 256, 64)
-  ctx.fillStyle = '#16140f'
-  for (let i = -2; i < 10; i += 1) {
-    ctx.beginPath()
-    ctx.moveTo(i * 32, 64)
-    ctx.lineTo(i * 32 + 16, 64)
-    ctx.lineTo(i * 32 + 48, 0)
-    ctx.lineTo(i * 32 + 32, 0)
-    ctx.fill()
-  }
-  for (let i = 0; i < 400; i += 1) {
-    ctx.fillStyle = `rgba(40,30,20,${Math.random() * 0.25})`
-    ctx.fillRect(Math.random() * 256, Math.random() * 64, 2 + Math.random() * 6, 1 + Math.random() * 3)
-  }
+  c.width = 4
+  c.height = 256
+  const g = c.getContext('2d')!
+  const grad = g.createLinearGradient(0, 0, 0, 256)
+  grad.addColorStop(0, '#5f9fe0')
+  grad.addColorStop(0.38, '#9cc8ee')
+  grad.addColorStop(0.5, '#f1e6d2')
+  grad.addColorStop(0.56, '#d9d1c2')
+  grad.addColorStop(1, '#b8ab96')
+  g.fillStyle = grad
+  g.fillRect(0, 0, 4, 256)
   const t = new THREE.CanvasTexture(c)
   t.colorSpace = THREE.SRGBColorSpace
-  t.wrapS = t.wrapT = THREE.RepeatWrapping
+  t.mapping = THREE.EquirectangularReflectionMapping
   return t
 }

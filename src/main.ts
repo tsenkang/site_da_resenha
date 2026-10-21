@@ -40,6 +40,8 @@ async function boot(): Promise<void> {
   const startMatch = (mode?: GameMode) => {
     if (!game) return
     const selectedMode = mode ?? game.gameMode
+    game.teamSize = save.data.teamSize
+    closeBuy(false)
     audio.unlock()
     audio.retryMusic()
     ui.resetHud()
@@ -55,7 +57,19 @@ async function boot(): Promise<void> {
     loop.resetAccumulator()
     input.lockPointer()
   }
+  // Tactical shop: frees the cursor while open; closing re-captures it when the round is live.
+  const openBuy = () => {
+    if (!game?.tactical?.canBuy || ui.tac.buyOpen) return
+    ui.tac.setBuyOpen(true)
+    input.unlockPointer()
+  }
+  const closeBuy = (relock = true) => {
+    if (!ui.tac.buyOpen) return
+    ui.tac.setBuyOpen(false)
+    if (relock && game?.mode === 'playing' && game.player.alive) input.lockPointer()
+  }
   const pause = () => {
+    if (ui.tac.buyOpen) return closeBuy()
     if (game?.mode !== 'playing' && game?.mode !== 'countdown') return
     if (game.choosingPerk) return
     game.pause()
@@ -94,6 +108,8 @@ async function boot(): Promise<void> {
       }
     },
     pickPerk,
+    buy: item => (game?.tactical?.canBuy ? game.tactical.buy(item) : null),
+    closeBuy: () => closeBuy(),
   })
   ui.show('boot')
   applySettings(save.data)
@@ -149,8 +165,10 @@ async function boot(): Promise<void> {
       if (offer) input.unlockPointer()
     },
     perkChosen: i => ui.perkChosen(i),
+    closeBuy: () => closeBuy(),
     ended: (match, summary) => {
       input.unlockPointer()
+      ui.tacBoard = game!.tactical?.scoreboard() ?? []
       ui.showResults(match, game!.standings(), summary)
       // Only Deathmatch scores enter the casual frags board. Local results remain independent of
       // the network: failures are rendered in the result panel and never interrupt the match.
@@ -175,6 +193,7 @@ async function boot(): Promise<void> {
     },
   })
   applySettings(save.data)
+  ui.setMap(game.arena.minimap, game.arena.sites)
   const g = game
   if (import.meta.env.DEV) {
     const [{ registerGameTuning }, { tuning }] = await Promise.all([import('../scripts/manus-tuning/adapter.js'), import('./game/tuning')])
@@ -192,7 +211,12 @@ async function boot(): Promise<void> {
       frameAvg += (Math.min(0.1, frameSeconds) * 1000 - frameAvg) * 0.05
       // Real frame time drives the VFX budget (bulk emitters shed particles when frames run long).
       g.fx.frameTime(frameSeconds * 1000)
+      if (g.mode === 'playing' || g.mode === 'countdown') g.renderer.adapt(frameSeconds * 1000)
       input.update()
+      if (g.tactical && input.consume('buy')) {
+        if (ui.tac.buyOpen) closeBuy()
+        else openBuy()
+      }
       if (input.consume('pause') && performance.now() - lockLostAt > 300) {
         if (g.mode === 'playing' || g.mode === 'countdown') pause()
         else if (g.mode === 'paused' && ui.screen === 'pause') resume()
@@ -207,7 +231,9 @@ async function boot(): Promise<void> {
       ui.tick(frameSeconds)
       if (g.mode === 'playing' || g.mode === 'countdown' || g.mode === 'ended' || g.mode === 'paused') {
         const pxPerRad = window.innerHeight / 2 / Math.tan((g.camera.fov * Math.PI) / 360)
-        ui.updateHud(g.hud(), g.standings(), input.held('scoreboard'), pxPerRad, frameSeconds)
+        const board = input.held('scoreboard')
+        const extra = g.tactical ? { minimap: g.minimap(), board: board ? g.tactical.scoreboard() : [] } : undefined
+        ui.updateHud(g.hud(), g.standings(), board, pxPerRad, frameSeconds, extra)
       }
     },
   })
@@ -216,7 +242,7 @@ async function boot(): Promise<void> {
   loop.start()
   document.addEventListener('pointerlockchange', () => {
     // Browsers release pointer lock on Escape without delivering the key: treat that as pause.
-    if (!document.pointerLockElement && (g.mode === 'playing' || g.mode === 'countdown') && input.method === 'keyboard' && !g.choosingPerk) {
+    if (!document.pointerLockElement && (g.mode === 'playing' || g.mode === 'countdown') && input.method === 'keyboard' && !g.choosingPerk && !ui.tac.buyOpen) {
       lockLostAt = performance.now()
       pause()
     }
@@ -226,7 +252,7 @@ async function boot(): Promise<void> {
   })
   window.addEventListener('game:pause', pause)
   canvas.addEventListener('click', () => {
-    if ((g.mode === 'playing' || g.mode === 'countdown') && !g.choosingPerk) input.lockPointer()
+    if ((g.mode === 'playing' || g.mode === 'countdown') && !g.choosingPerk && !ui.tac.buyOpen) input.lockPointer()
   })
   // First gesture unlocks audio and (re)starts music blocked by the autoplay policy.
   const gesture = () => {

@@ -21,6 +21,8 @@ export type SaveData = {
   reducedMotion: boolean
   tutorialDone: boolean
   playerName: string
+  /** Tactical mode team size (2v2 … 5v5). */
+  teamSize: 2 | 3 | 4 | 5
   leaderboard: ScoreEntry[]
 }
 
@@ -41,6 +43,7 @@ export function defaultSave(): SaveData {
     reducedMotion: false,
     tutorialDone: false,
     playerName: 'PLAYER',
+    teamSize: 5,
     leaderboard: [],
   }
 }
@@ -74,6 +77,7 @@ export function parseSave(raw: string | null): SaveData {
     reducedMotion: data.reducedMotion === true,
     tutorialDone: data.tutorialDone === true,
     playerName: typeof data.playerName === 'string' && data.playerName.trim() ? data.playerName.trim().slice(0, 16) : base.playerName,
+    teamSize: data.teamSize === 2 || data.teamSize === 3 || data.teamSize === 4 || data.teamSize === 5 ? data.teamSize : base.teamSize,
     leaderboard: board
       .filter((e): e is ScoreEntry => !!e && typeof e === 'object' && typeof (e as ScoreEntry).name === 'string' && Number.isFinite((e as ScoreEntry).score))
       .map(e => ({ name: e.name.slice(0, 16), score: Math.max(0, Math.floor(e.score)), seconds: Number.isFinite(e.seconds) ? e.seconds : 0, at: Number.isFinite(e.at) ? e.at : 0 }))

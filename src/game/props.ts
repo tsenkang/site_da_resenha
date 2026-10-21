@@ -115,8 +115,8 @@ export class Props {
     }
   }
 
-  private explode(p: Prop, world: CombatWorld): void {
-    const d = PROP[p.spot.model]
+  /** Remove a prop from the world (collider, nav block, mesh) without exploding it. */
+  private remove(p: Prop): void {
     p.alive = false
     p.obj.visible = false
     if (p.collider) {
@@ -127,12 +127,26 @@ export class Props {
     for (let i = 0; i < p.blocked.length; i += 2) this.nav.heights[p.blocked[i]] = p.blocked[i + 1]
     p.blocked = []
     this.releaseLight(p)
+  }
+
+  /** Tactical mode has no explosive barrels: park them all until another mode resets. */
+  active = true
+  setActive(on: boolean): void {
+    this.active = on
+    if (on) this.reset()
+    else for (const p of this.list) if (p.alive) this.remove(p)
+  }
+
+  private explode(p: Prop, world: CombatWorld): void {
+    const d = PROP[p.spot.model]
+    this.remove(p)
     p.respawn = 35
     const at = p.spot.pos.clone().setY(p.spot.pos.y + d.height * 0.5)
     world.explode(at, d.radius, d.damage, p.lastAttacker, 'barrel', new THREE.Vector3(0, 1, 0))
   }
 
   update(dt: number, world: CombatWorld, occupied: (pos: THREE.Vector3) => boolean): void {
+    if (!this.active) return
     this.list.forEach((p, index) => {
       if (!p.alive) {
         p.respawn -= dt
@@ -156,6 +170,7 @@ export class Props {
   }
 
   reset(): void {
+    if (!this.active) return
     this.list.forEach((p, index) => {
       if (!p.alive) this.enable(p, index)
       p.burning = 0
@@ -166,7 +181,7 @@ export class Props {
 }
 
 export type PickupKind = PickupSpot['kind']
-type Pickup = { spot: PickupSpot; item: THREE.Object3D; ring: THREE.Mesh; beam: THREE.Mesh; glow: THREE.Mesh; available: boolean; respawn: number }
+type Pickup = { spot: PickupSpot; group: THREE.Group; item: THREE.Object3D; ring: THREE.Mesh; beam: THREE.Mesh; glow: THREE.Mesh; available: boolean; respawn: number }
 
 const PICKUP_STYLE: Record<PickupKind, { color: string; respawn: number }> = {
   health: { color: '#4dff7a', respawn: 20 },
@@ -238,7 +253,7 @@ export class Pickups {
       glow.renderOrder = 3
       group.add(glow)
       scene.add(group)
-      this.list.push({ spot, item: holder, ring, beam, glow, available: true, respawn: 0 })
+      this.list.push({ spot, group, item: holder, ring, beam, glow, available: true, respawn: 0 })
     }
   }
 
@@ -257,6 +272,15 @@ export class Pickups {
       ;(p.beam.material as THREE.MeshBasicMaterial).opacity = p.available ? 0.08 + Math.sin(time * 3) * 0.02 : 0.015
       ;(p.glow.material as THREE.MeshBasicMaterial).opacity = p.available ? 0.5 + Math.sin(time * 3) * 0.06 : 0.08
       ;(p.ring.material as THREE.MeshStandardMaterial).emissiveIntensity = p.available ? 5 : 0.8
+    }
+  }
+
+  /** Hide every pad (tactical mode) or show them again. Hidden pads are never available. */
+  setActive(on: boolean): void {
+    for (const p of this.list) {
+      p.group.visible = on
+      p.available = on
+      p.respawn = on ? 0 : Infinity
     }
   }
 

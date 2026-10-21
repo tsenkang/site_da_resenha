@@ -6,6 +6,10 @@ import { RANK_COLOR, type Perk } from '../game/onslaught'
 import { accuracy, formatClock, type Combatant, type MatchState, type Medal } from '../game/rules'
 import type { HitKind } from '../game/weapons'
 import { Sparks } from './sparks'
+import { GLYPH, TacticalHudView, type BoardRow } from './tacticalHud'
+import type { BuyResult, ShopItem } from '../game/tactical'
+import type { MapRect, Site } from '../game/arena'
+import type { MinimapState } from '../game/tacticalMatch'
 
 export type Screen = 'boot' | 'title' | 'hud' | 'pause' | 'settings' | 'controls' | 'results'
 
@@ -16,7 +20,13 @@ export type UiActions = {
   quit(): void
   settings(patch: Partial<SaveData>): void
   pickPerk(i: number): void
+  /** Tactical shop (null when the shop is not available). */
+  buy(item: ShopItem): BuyResult | null
+  closeBuy(): void
 }
+
+/** Per-frame extras for the tactical HUD. */
+export type TacticalExtras = { minimap: MinimapState | null; board: BoardRow[] }
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''): HTMLElementTagNameMap[K] => {
   const e = document.createElement(tag)
@@ -27,12 +37,16 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''):
 const icon = (name: string, cls = '') => `<i class="ico ${cls}" style="--ico:url(assets/ui/icon_${name}.webp)"></i>`
 
 const CONTROLS: [string, string][] = [
+  ['B', 'Tático: abrir a loja (fase de compra)'],
+  ['F ou 4 (segure)', 'Tático: plantar / desarmar a spike'],
+  ['E · G', 'Tático: fumaça · granada'],
+  ['1 / 2', 'Tático: arma primária / pistola'],
+  ['Shift', 'Tático: andar em silêncio · outros modos: correr'],
   ['W A S D', 'Mover'],
   ['Mouse', 'Olhar'],
   ['Clique esquerdo', 'Atirar'],
   ['Clique direito', 'Mira'],
   ['R', 'Recarregar'],
-  ['Shift', 'Correr'],
   ['Espaço', 'Pular'],
   ['C / Ctrl', 'Agachar; toque correndo para deslizar'],
   ['G', 'Granada'],
@@ -54,7 +68,7 @@ const TIPS = [
   'Os Cães avançam e se autodestroem quando estão fracos. Finalize ou saia do caminho.',
 ]
 const ordinal = (n: number) => `${n}º`
-const SHARD_COL: Record<ShardKind, string> = { health: '#5cff8a', armor: '#58c8ff', ammo: '#ffc23f' }
+const SHARD_COL: Record<ShardKind, string> = { health: '#5cff8a', armor: '#58c8ff', ammo: '#ece8e1' }
 
 export class Ui {
   screen: Screen = 'boot'
@@ -83,12 +97,15 @@ export class Ui {
   private tipT = 0
   private tipI = 0
   mode: GameMode = 'onslaught'
+  readonly tac: TacticalHudView
 
   constructor(private readonly t: I18n, private readonly save: SaveStore, private readonly audio: Audio, private readonly actions: UiActions) {
     this.root = document.getElementById('ui')!
     this.buildBoot()
     this.buildTitle()
     this.buildHud()
+    this.tac = new TacticalHudView(audio, item => actions.buy(item), () => actions.closeBuy())
+    this.screens.get('hud')!.appendChild(this.tac.root)
     this.buildPause()
     this.buildSettings()
     this.buildControls()
@@ -113,14 +130,14 @@ export class Ui {
       this.audio.unlock()
       this.audio.play('ui_confirm', { volume: 0.7, jitter: 0 })
       const r = b.getBoundingClientRect()
-      this.sparks.burst(r.left + r.width * 0.5, r.top + r.height * 0.5, { count: 40, speed: 420, color: '#ffb040' })
+      this.sparks.burst(r.left + r.width * 0.5, r.top + r.height * 0.5, { count: 40, speed: 420, color: '#ff4655' })
       onClick()
     })
     b.addEventListener('mouseenter', () => {
       this.audio.play('ui_hover', { volume: 0.35, jitter: 0.05 })
       const r = b.getBoundingClientRect()
-      this.sparks.burst(r.left + 6, r.top + r.height / 2, { count: 10, speed: 200, color: '#ff9a2e', angle: Math.PI, spread: 1.2, life: 0.4 })
-      this.sparks.burst(r.right - 6, r.top + r.height / 2, { count: 10, speed: 200, color: '#ff9a2e', angle: 0, spread: 1.2, life: 0.4 })
+      this.sparks.burst(r.left + 6, r.top + r.height / 2, { count: 10, speed: 200, color: '#ff4655', angle: Math.PI, spread: 1.2, life: 0.4 })
+      this.sparks.burst(r.right - 6, r.top + r.height / 2, { count: 10, speed: 200, color: '#ff4655', angle: 0, spread: 1.2, life: 0.4 })
     })
     return b
   }
@@ -144,7 +161,7 @@ export class Ui {
     for (const [name, node] of this.screens) node.hidden = name !== screen && !(name === 'hud' && overHud)
     this.screen = screen
     document.body.dataset.screen = screen
-    this.sparks.trickle(screen === 'title' || screen === 'boot' ? 26 : screen === 'results' ? 14 : 0)
+    this.sparks.trickle(screen === 'title' || screen === 'boot' ? 10 : screen === 'results' ? 6 : 0)
     if (screen === 'title') this.refreshTitle()
   }
 
@@ -191,18 +208,34 @@ export class Ui {
   // ─── title ───────────────────────────────────────────────────────────
   private buildTitle(): void {
     const n = el('div', '', `
-      <div class="title-art"></div>
+      <div class="title-art"><i class="ta-stripe"></i><i class="ta-stripe b"></i></div>
       <div class="title-left">
-        <div class="kicker">FPS COMPETITIVO · VISUAL CARTOON · PARTIDAS RÁPIDAS</div>
-        <div class="logo big"><span class="logo-a">RIFTSTRIKE</span><span class="logo-b">ARENA CARTOON</span></div>
-        <div class="tagline">Mire, atire e domine a arena em partidas rápidas.</div>
+        <div class="kicker">FPS TÁTICO 5V5 · LEVE PARA QUALQUER PC</div>
+        <div class="logo big"><span class="logo-a">RIFTSTRIKE</span><span class="logo-b">PROTOCOLO SPIKE</span></div>
+        <div class="tagline">Plante a spike, segure o local, vença a rodada.</div>
         <div class="menu"></div>
         <div class="best"></div>
       </div>
-      <div class="title-foot">Arena low-poly &nbsp;·&nbsp; WASD + mouse · controle compatível · placar online casual</div>`)
+      <div class="title-foot">Base Aurora &nbsp;·&nbsp; WASD + mouse &nbsp;·&nbsp; roda em Chromebook e PC fraco</div>`)
+    const sizes = el('div', 'team-size', `<span>TAMANHO DO TIME</span><div class="segs"></div>`)
+    for (const size of [2, 3, 4, 5] as const) {
+      const b = el('button', `seg-btn ${this.save.data.teamSize === size ? 'on' : ''}`, `${size}v${size}`)
+      b.addEventListener('click', () => {
+        this.audio.play('ui_confirm', { volume: 0.5 })
+        this.save.update({ teamSize: size })
+        sizes.querySelectorAll('.seg-btn').forEach(x => x.classList.toggle('on', x === b))
+        this.refreshTitle()
+      })
+      sizes.querySelector('.segs')!.appendChild(b)
+    }
+    const online = this.button('ONLINE', () => this.actions.settings({}), 'soon', 'em breve · salas 2v2 a 5v5')
+    online.disabled = true
     n.querySelector('.menu')!.append(
-      this.button('SOBREVIVÊNCIA', () => this.actions.play('onslaught'), 'primary', '8 ondas · chefe final'),
-      this.button('DEATHMATCH', () => this.actions.play('deathmatch'), '', `6 robôs · placar competitivo`),
+      this.button('TÁTICO · SPIKE', () => this.actions.play('tactical'), 'primary tac-play', ''),
+      sizes,
+      this.button('MATA-MATA', () => this.actions.play('deathmatch'), '', '6 rivais · primeiro a 20'),
+      this.button('SOBREVIVÊNCIA', () => this.actions.play('onslaught'), '', '8 ondas · chefe final'),
+      online,
       this.button(this.t.t('menu.controls'), () => this.push('controls')),
       this.button(this.t.t('menu.settings'), () => this.push('settings')),
     )
@@ -211,12 +244,17 @@ export class Ui {
 
   private refreshTitle(): void {
     const n = this.screens.get('title')!
+    const size = this.save.data.teamSize
+    const sub = n.querySelector<HTMLElement>('.tac-play small') ?? n.querySelector<HTMLElement>('.tac-play')!.appendChild(el('small'))
+    sub.textContent = `${size}v${size} contra bots · primeiro a 5 rodadas`
     const lb = this.save.data.leaderboard
     const o = lb.find(e => e.name === 'SOBREVIVÊNCIA')
-    const d = lb.find(e => e.name !== 'SOBREVIVÊNCIA')
+    const d = lb.find(e => e.name === 'DEATHMATCH')
+    const t = lb.find(e => e.name === 'TÁTICO')
     const parts: string[] = []
+    if (t) parts.push(`TÁTICO <b>${t.score.toLocaleString('pt-BR')}</b>`)
     if (o) parts.push(`SOBREVIVÊNCIA <b>${o.score.toLocaleString('pt-BR')}</b>`)
-    if (d) parts.push(`DEATHMATCH <b>${d.score.toLocaleString('pt-BR')}</b>`)
+    if (d) parts.push(`MATA-MATA <b>${d.score.toLocaleString('pt-BR')}</b>`)
     n.querySelector('.best')!.innerHTML = parts.join(' &nbsp;·&nbsp; ')
   }
 
@@ -331,16 +369,20 @@ export class Ui {
   }
 
   /** Per-frame HUD update. `pxPerRad` converts spread angles to screen pixels. */
-  updateHud(h: HudState, board: Combatant[], showBoard: boolean, pxPerRad: number, dt: number): void {
+  updateHud(h: HudState, board: Combatant[], showBoard: boolean, pxPerRad: number, dt: number, extra?: TacticalExtras): void {
     const E = this.E
     const set = (k: string, v: string) => {
       const e = E[k]
       if (e && e.textContent !== v) e.textContent = v
     }
     const ons = h.gameMode === 'onslaught'
-    document.body.dataset.mode = h.gameMode
+    const tac = h.tactical
+    if (document.body.dataset.mode !== h.gameMode) document.body.dataset.mode = h.gameMode
+    if (tac) this.tac.update(tac, extra?.minimap ?? null, showBoard, extra?.board ?? [], dt)
     // Deathmatch header.
-    if (!ons) {
+    if (tac) {
+      /* tactical header lives in TacticalHudView */
+    } else if (!ons) {
       set('kills', String(h.kills))
       set('clock', formatClock(h.timeLeft))
       set('limit', this.t.t('hud.limit', { n: h.fragLimit }))
@@ -385,7 +427,7 @@ export class Ui {
       document.body.classList.toggle('overdrive', h.overdriveActive > 0)
       if (ready && !this.lastOdReady) {
         const [x, y] = this.center(E['od-ring'])
-        this.sparks.burst(x, y, { count: 50, speed: 380, color: '#ffb020', life: 0.7 })
+        this.sparks.burst(x, y, { count: 50, speed: 380, color: '#ff4655', life: 0.7 })
       }
       this.lastOdReady = ready
       // Boss.
@@ -422,11 +464,11 @@ export class Ui {
         s.classList.toggle('active', s.dataset.slot === h.weapon)
         s.classList.toggle('locked', !h.owned[s.dataset.slot as 'rifle'])
       })
-      E.wicon.innerHTML = icon(h.weapon)
-      E.nades.innerHTML = h.grenadesUnlocked ? Array.from({ length: Math.max(h.grenades, 0) }, () => icon('grenade')).join('') + '<kbd>G</kbd>' : ''
+      E.wicon.innerHTML = h.weapon === 'pistol' ? `<span class="glyph">${GLYPH.pistol}</span>` : icon(h.weapon)
+      E.nades.innerHTML = h.grenadesUnlocked && !tac ? Array.from({ length: Math.max(h.grenades, 0) }, () => icon('grenade')).join('') + '<kbd>G</kbd>' : ''
       if (prevW && prevW !== h.weapon) {
         const [x, y] = this.center(E.wicon)
-        this.sparks.burst(x, y, { count: 16, speed: 260, color: '#ffb040', life: 0.45 })
+        this.sparks.burst(x, y, { count: 16, speed: 260, color: '#ff4655', life: 0.45 })
       }
     }
     // Crosshair gap follows the real spread cone.
@@ -442,15 +484,15 @@ export class Ui {
     ;(E.reload.firstElementChild as HTMLElement).style.transform = `scaleX(${h.reloading})`
     if (this.lastReload > 0 && h.reloading === 0) {
       const [x, y] = this.center(E.mag)
-      this.sparks.burst(x, y, { count: 22, speed: 300, color: '#ffc23f', life: 0.5 })
+      this.sparks.burst(x, y, { count: 22, speed: 300, color: '#ece8e1', life: 0.5 })
     }
     this.lastReload = h.reloading
     const warn = h.reloading > 0 ? '' : h.mag === 0 && h.reserve === 0 ? this.t.t('hud.noAmmo') : h.lowAmmo ? this.t.t('hud.reload') : ''
     if (E['ammo-warn'].textContent !== warn) E['ammo-warn'].textContent = warn
-    E.protect.style.opacity = h.protect > 0 && h.alive && !ons ? '1' : '0'
+    E.protect.style.opacity = h.protect > 0 && h.alive && !ons && !tac ? '1' : '0'
     E.lowhp.style.opacity = h.alive ? String(Math.max(0, 1 - h.health / 35) * 0.35) : '0'
-    this.deathEl.classList.toggle('on', !h.alive && !ons)
-    if (!h.alive && !ons) this.deathEl.querySelector('.d-timer')!.textContent = this.t.t('hud.respawn', { s: Math.ceil(h.respawnIn) })
+    this.deathEl.classList.toggle('on', !h.alive && !ons && !tac)
+    if (!h.alive && !ons && !tac) this.deathEl.querySelector('.d-timer')!.textContent = this.t.t('hud.respawn', { s: Math.ceil(h.respawnIn) })
     this.hitT = Math.max(0, this.hitT - dt)
     E.hitmark.style.opacity = String(Math.min(1, this.hitT * 5))
     this.medalT -= dt
@@ -463,10 +505,10 @@ export class Ui {
       m.classList.add('pop')
       this.medalT = 1.1
       const [x, y] = this.center(m)
-      this.sparks.burst(x, y, { count: 30, speed: 360, color: '#ffc23f' })
+      this.sparks.burst(x, y, { count: 30, speed: 360, color: '#ece8e1' })
     }
-    this.board.classList.toggle('on', showBoard && !ons)
-    if (showBoard && !ons) {
+    this.board.classList.toggle('on', showBoard && !ons && !tac)
+    if (showBoard && !ons && !tac) {
       const rows = board.map((c, i) => `<tr class="${c.isPlayer ? 'me' : ''}"><td>${i + 1}</td><td>${c.name}</td><td>${c.kills}</td><td>${c.deaths}</td></tr>`).join('')
       if (rows !== this.boardRows) {
         this.boardRows = rows
@@ -510,8 +552,8 @@ export class Ui {
     if (!c) return
     c.classList.add('chosen')
     const [x, y] = this.center(c)
-    this.sparks.burst(x, y, { count: 90, speed: 620, color: '#ffb020', life: 0.9 })
-    this.sparks.burst(x, y, { count: 6, kind: 'glow', size: 16, speed: 40, gravity: 0, color: '#ff9a2e' })
+    this.sparks.burst(x, y, { count: 90, speed: 620, color: '#ff4655', life: 0.9 })
+    this.sparks.burst(x, y, { count: 6, kind: 'glow', size: 16, speed: 40, gravity: 0, color: '#ff4655' })
   }
 
   readonly events: Omit<GameEvents, 'ended'> = {
@@ -525,7 +567,7 @@ export class Ui {
       m.classList.add('pulse')
       const cx = window.innerWidth / 2
       const cy = window.innerHeight / 2
-      if (kind === 'kill') this.sparks.burst(cx, cy, { count: 34, speed: 520, color: '#ff4a2a', life: 0.45, gravity: 200 })
+      if (kind === 'kill') this.sparks.burst(cx, cy, { count: 34, speed: 520, color: '#ff4655', life: 0.45, gravity: 200 })
       else if (kind === 'head') this.sparks.burst(cx, cy, { count: 16, speed: 420, color: '#ffe38a', life: 0.35, gravity: 150 })
       else this.sparks.burst(cx, cy, { count: kind === 'armor' ? 5 : 7, speed: 300, color: kind === 'armor' ? '#58c8ff' : '#ffffff', life: 0.25, gravity: 100 })
       if (kind === 'body') this.audio.play('hitmarker', { volume: 0.55, jitter: 0.08 })
@@ -599,7 +641,7 @@ export class Ui {
       c.className = `countdown on ${n === 0 ? 'go' : ''}`
       void c.offsetWidth
       c.classList.add('pop')
-      this.sparks.burst(window.innerWidth / 2, window.innerHeight * 0.36, { count: n === 0 ? 80 : 24, speed: n === 0 ? 700 : 340, color: n === 0 ? '#ff9a2e' : '#ffd08a' })
+      this.sparks.burst(window.innerWidth / 2, window.innerHeight * 0.36, { count: n === 0 ? 80 : 24, speed: n === 0 ? 700 : 340, color: n === 0 ? '#ff4655' : '#ece8e1' })
       if (n === 0) window.setTimeout(() => (c.className = 'countdown'), 900)
     },
     style: (p: StylePop) => {
@@ -631,7 +673,7 @@ export class Ui {
       }, hold)
       const burst = () => {
         const r = bn.querySelector('.bn-in')!.getBoundingClientRect()
-        const col = b.kind === 'clear' || b.kind === 'victory' ? '#ffd35c' : b.kind === 'boss' || b.kind === 'phase' ? '#ff3a1a' : '#ff9a2e'
+        const col = b.kind === 'clear' || b.kind === 'victory' ? '#3ce0c4' : b.kind === 'boss' || b.kind === 'phase' ? '#ff3a1a' : '#ff4655'
         this.sparks.burst(r.left, r.top + r.height / 2, { count: 60, speed: 620, angle: Math.PI, spread: 0.8, color: col, life: 0.8, gravity: 120 })
         this.sparks.burst(r.right, r.top + r.height / 2, { count: 60, speed: 620, angle: 0, spread: 0.8, color: col, life: 0.8, gravity: 120 })
         this.sparks.streak(r.left, r.right, r.bottom, { count: 40, speed: 200, color: col })
@@ -643,8 +685,8 @@ export class Ui {
     overdrive: (on: boolean) => {
       const [x, y] = this.center(this.E['od-ring'])
       if (on) {
-        this.sparks.burst(x, y, { count: 140, speed: 900, color: '#ffb020', life: 0.9, gravity: 0, drag: 2 })
-        this.sparks.burst(x, y, { count: 10, kind: 'glow', size: 22, speed: 80, gravity: 0, color: '#ff8a1a' })
+        this.sparks.burst(x, y, { count: 140, speed: 900, color: '#ff4655', life: 0.9, gravity: 0, drag: 2 })
+        this.sparks.burst(x, y, { count: 10, kind: 'glow', size: 22, speed: 80, gravity: 0, color: '#ff4655' })
       } else this.sparks.burst(x, y, { count: 30, speed: 300, color: '#aa7a3a', life: 0.5 })
     },
     shard: (kind: ShardKind) => {
@@ -768,6 +810,12 @@ export class Ui {
     this.add('results', n)
   }
 
+  /** Tactical scoreboard snapshot for the results screen. */
+  tacBoard: BoardRow[] = []
+  setMap(rects: MapRect[], sites: Site[]): void {
+    this.tac.setMap(rects, sites)
+  }
+
   setOnlineStatus(text: string, kind: 'good' | 'warn' = 'good'): void {
     const status = this.screens.get('results')?.querySelector<HTMLElement>('.r-online')
     if (!status) return
@@ -780,7 +828,24 @@ export class Ui {
     this.setOnlineStatus('', 'good')
     const stat = (label: string, value: string, big = false) => `<div class="stat ${big ? 'big' : ''}"><small>${label}</small><b>${value}</b></div>`
     const head = n.querySelector<HTMLElement>('.r-head')!
-    if (s) {
+    if (s?.mode === 'tactical') {
+      const prev = this.save.data.leaderboard.find(e => e.name === 'TÁTICO')?.score ?? 0
+      const r = insertScore(this.save.data.leaderboard, { name: 'TÁTICO', score: s.score, seconds: Math.round(s.time), at: Date.now() })
+      this.save.update({ leaderboard: r.board })
+      head.textContent = s.won ? 'VITÓRIA' : 'DERROTA'
+      head.className = `r-head ${s.won ? 'won' : 'lost'}`
+      n.querySelector('.r-sub')!.textContent = `Placar final ${s.wave} — ${s.waves}`
+      n.querySelector('.r-stats')!.innerHTML = [
+        stat('RODADAS', `${s.wave}-${s.waves}`),
+        stat('ELIMINAÇÕES', String(s.kills)),
+        stat('HEADSHOTS', String(s.headshots)),
+        stat('PRECISÃO', `${Math.round(s.accuracy * 100)}%`),
+        stat('TEMPO', formatClock(s.time)),
+        stat('PONTOS', s.score.toLocaleString('pt-BR'), true),
+      ].join('') + (s.score > prev ? `<div class="r-best">${this.t.t('result.best')}</div>` : '')
+      const rows = this.tacBoard
+      n.querySelector('.r-board')!.innerHTML = `<table>${rows.map(c => `<tr class="${c.isPlayer ? 'me' : ''} ${c.team === 0 ? 'ally' : 'enemy'}"><td>${c.team === 0 ? 'ALIADO' : 'INIMIGO'}</td><td>${c.name}</td><td>${c.kills}</td><td>${c.deaths}</td></tr>`).join('')}</table>`
+    } else if (s) {
       let best = false
       if (!s.unranked) {
         const prev = this.save.data.leaderboard.find(e => e.name === 'SOBREVIVÊNCIA')?.score ?? 0
@@ -807,7 +872,7 @@ export class Ui {
       const place = board.findIndex(c => c.isPlayer) + 1
       let best = false
       if (!m.unranked) {
-        const prev = this.save.data.leaderboard.find(e => e.name !== 'SOBREVIVÊNCIA')?.score ?? 0
+        const prev = this.save.data.leaderboard.find(e => e.name === 'DEATHMATCH')?.score ?? 0
         const r = insertScore(this.save.data.leaderboard, { name: 'DEATHMATCH', score: m.score, seconds: Math.round(m.elapsed), at: Date.now() })
         this.save.update({ leaderboard: r.board })
         best = m.score > prev
@@ -830,7 +895,7 @@ export class Ui {
     window.setTimeout(() => {
       const [x, y] = this.center(head)
       const won = head.classList.contains('won')
-      this.sparks.burst(x, y, { count: 120, speed: 700, color: won ? '#ffd35c' : '#ff3a1a', life: 1 })
+      this.sparks.burst(x, y, { count: 120, speed: 700, color: won ? '#3ce0c4' : '#ff3a1a', life: 1 })
     }, 80)
   }
 }

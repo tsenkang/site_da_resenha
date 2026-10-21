@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { flashGroup, redDotTexture, viewmodelMaterial, type ViewModel } from './guns'
+import { buildPistol, flashGroup, redDotTexture, viewmodelMaterial, type ViewModel } from './guns'
 
 /**
  * First-person weapons built from Tripo-reconstructed PBR models (rifle, shotgun, launcher,
@@ -120,10 +120,11 @@ export function setArmPose(g: THREE.Object3D, pose: ArmPose): void {
 }
 
 /** Tunable arm poses per weapon (exposed so the lab page can iterate on them). */
-export const ARM_POSES: Record<'rifle' | 'shotgun' | 'rocket', { right: ArmPose; left: ArmPose }> = {
+export const ARM_POSES: Record<'rifle' | 'shotgun' | 'rocket' | 'pistol', { right: ArmPose; left: ArmPose }> = {
   rifle: { right: { at: [0.005, -0.1, 0.06], rot: [0.75, 0.35, -0.6] }, left: { at: [-0.01, -0.045, -0.33], rot: [0.9, -0.55, 0.63] } },
   shotgun: { right: { at: [0.005, -0.09, 0.12], rot: [0.75, 0.35, -0.6] }, left: { at: [-0.005, -0.035, 0], rot: [0.9, -0.55, 0.63] } },
   rocket: { right: { at: [0.005, -0.15, 0.04], rot: [0.75, 0.35, -0.6] }, left: { at: [0.005, -0.14, -0.17], rot: [0.8, -0.35, -0.2] } },
+  pistol: { right: { at: [0.004, -0.058, 0.04], rot: [0.75, 0.35, -0.6] }, left: { at: [-0.03, -0.07, 0.02], rot: [0.85, -0.6, 0.75] } },
 }
 
 // ─── weapons ────────────────────────────────────────────────────────────
@@ -141,6 +142,13 @@ function addArms(root: THREE.Object3D, A: VmAssets, id: keyof typeof ARM_POSES, 
   const P = ARM_POSES[id]
   if (A.armR) root.add(buildArm(A.armR, 'armR', P.right))
   if (A.armL) (leftParent ?? root).add(buildArm(A.armL, 'armL', P.left))
+}
+
+/** Procedural pistol held by the scanned arms (two-handed grip). */
+export function buildTripoPistol(A: VmAssets, flashTex: THREE.Texture, flameTex: THREE.Texture): ViewModel {
+  const vm = buildPistol(flashTex, flameTex, false)
+  addArms(vm.root, A, 'pistol')
+  return vm
 }
 
 export function buildTripoRifle(A: VmAssets, flashTex: THREE.Texture, flameTex: THREE.Texture): ViewModel {

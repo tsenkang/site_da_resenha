@@ -6,7 +6,7 @@ import type { Renderer } from '../engine/renderer'
 import { Arena, type ColliderTag } from './arena'
 import { Bot, type BrainContext, type ItemInfo, type Target } from './bots'
 import type { CombatWorld, DamageInfo, DamageResult, DamageSource, Hit, ProjectileKind } from './combat'
-import { BOT_ROSTER, CONFIG, WEAPONS, type BotKind, type WeaponId } from './config'
+import { BOT_ROSTER, CONFIG, setWeaponProfile, WEAPONS, type BotKind, type WeaponId } from './config'
 import { Effects } from './fx'
 import { Hound } from './hound'
 import type { Library } from './library'
@@ -22,9 +22,11 @@ import { computeScore, createMatch, leader, placement, recordShot, registerKill,
 import type { Staged, StageId } from './stages'
 import { tuning } from './tuning'
 import { Arsenal, type HitKind } from './weapons'
+import { TacticalMatch, type MinimapState, type TacticalHud } from './tacticalMatch'
+import type { TeamIndex, TeamSize } from './tactical'
 
 export type Mode = 'attract' | 'countdown' | 'playing' | 'paused' | 'ended'
-export type GameMode = 'onslaught' | 'deathmatch'
+export type GameMode = 'onslaught' | 'deathmatch' | 'tactical'
 
 export type KillFeedEntry = { killer: string; victim: string; weapon: string; headshot: boolean; killerIsPlayer: boolean; victimIsPlayer: boolean; killerColor: string; victimColor: string }
 export type StylePop = { label: string; points: number; rank: number; rankedUp: boolean }
@@ -49,6 +51,8 @@ export type GameEvents = {
   shard(kind: ShardKind): void
   loading(text: string | null): void
   perkChosen?(i: number): void
+  /** Tactical: buy phase ended, close the shop if open. */
+  closeBuy?(): void
 }
 
 export type HudState = {
@@ -98,6 +102,8 @@ export type HudState = {
   boss: { name: string; health: number; phase: number } | null
   sliding: boolean
   runTime: number
+  /** Tactical mode only. */
+  tactical: TacticalHud | null
 }
 
 type Rocket = { pos: THREE.Vector3; vel: THREE.Vector3; owner: number; exclude: number; life: number; mesh: THREE.Group; loop?: { set(p: THREE.Vector3): void; stop(): void }; trail: number }
@@ -109,7 +115,7 @@ type PendingSpawn = { kind: EnemyKind; pos: THREE.Vector3; yaw: number; t: numbe
 type WavePhase = 'none' | 'loading' | 'intro' | 'fight' | 'clear' | 'perk' | 'next'
 
 const SOURCE_LABEL: Record<DamageSource, string> = {
-  rifle: 'M4', shotgun: 'M870', rocket: 'RPG-X', pulse: 'PULSE', scatter: 'SCATTER', barrel: 'BARREL', fall: 'FALL',
+  rifle: 'M4', shotgun: 'M870', rocket: 'RPG-X', pistol: 'P9', spike: 'SPIKE', pulse: 'PULSE', scatter: 'SCATTER', barrel: 'BARREL', fall: 'FALL',
   grenade: 'FRAG', plasma: 'PLASMA', cannon: 'CANNON', minigun: 'MINIGUN', slam: 'SLAM', kamikaze: 'KAMIKAZE',
 }
 const SHARD_COLOR: Record<ShardKind, [number, number, number]> = { health: [0.4, 3.2, 0.9], armor: [0.5, 1.8, 4], ammo: [4, 2.6, 0.5] }
@@ -257,6 +263,11 @@ export class Game implements CombatWorld {
   private readonly projLight = new THREE.PointLight('#5cc8ff', 0, 9, 1.6)
   mode: Mode = 'attract'
   gameMode: GameMode = 'onslaught'
+  /** Tactical (Spike) round director, alive while a tactical match runs. */
+  tactical: TacticalMatch | null = null
+  /** Team size for the next tactical match (2..5). */
+  teamSize: TeamSize = 5
+  private readonly tacBots = new Map<number, Bot>()
   match: MatchState = createMatch(BOT_ROSTER.slice(0, CONFIG.bots.count).map(b => b.name))
   time = 0
   private countdownT = 0
@@ -315,7 +326,7 @@ export class Game implements CombatWorld {
     lib: Library,
     private readonly staged: Staged,
     gate: StageGate,
-    private readonly events: GameEvents,
+    readonly events: GameEvents,
   ) {
     this.stageGate = gate
     this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.03, 600)
@@ -395,7 +406,7 @@ export class Game implements CombatWorld {
     })
     this.props = new Props(this.scene, this.physics, this.tags, this.arena.nav, lib, this.arena.props)
     this.pickups = new Pickups(this.scene, lib, this.arena.pickups, launcherPickup())
-    this.hotspots = [...this.arena.spawns, ...this.arena.pickups.map(p => p.pos), new THREE.Vector3(0, 0, 0), new THREE.Vector3(-14, 0, 0), new THREE.Vector3(14, 0, 0)]
+    this.hotspots = [...this.arena.hotspots, ...this.arena.spawns, ...this.arena.pickups.map(p => p.pos)]
     // Rift shards: instanced crystals with HDR instance colours (bloom picks them up).
     const shardGeo = new THREE.OctahedronGeometry(0.11, 0)
     shardGeo.scale(0.7, 1.25, 0.7)
@@ -416,6 +427,76 @@ export class Game implements CombatWorld {
     this.bots.push(bot)
     this.botById.set(id, bot)
     return bot
+  }
+
+  /**
+   * Tactical bots are built once and reused across matches: allies wear the operator rig with a
+   * cyan visor, enemies the breacher rig with a red visor, both carrying rifles.
+   */
+  createTacticalBot(id: number, name: string, team: TeamIndex): Bot {
+    let b = this.tacBots.get(id)
+    if (!b) {
+      b = team === 0 ? this.makeBot(id, name, 'striker', '#1f6f73', '#48f0d8', 'operator') : this.makeBot(id, name, 'striker', '#7a2a2a', '#ff4655', 'breacher')
+      this.tacBots.set(id, b)
+    }
+    b.team = team
+    b.hide()
+    return b
+  }
+
+  setGrenades(n: number): void {
+    this.grenades = n
+  }
+
+  /** New tactical round: clear leftovers from the previous one. */
+  onTacticalRound(): void {
+    this.rockets.forEach(r => {
+      r.loop?.stop()
+      this.scene.remove(r.mesh)
+    })
+    this.rockets = []
+    for (const g of this.grenadesLive) this.scene.remove(g.mesh)
+    this.grenadesLive = []
+    this.fx.clearDecals()
+    this.renderer.fx.damage = 0
+    this.renderer.fx.lowHealth = 0
+    this.killerId = -1
+    this.respawnT = 0
+    this.events.respawned()
+  }
+
+  /** Spike detonation kills (no killfeed credit). */
+  killPlayerSilently(): void {
+    if (!this.player.alive) return
+    this.player.health = 0
+    this.playerDied({ attacker: -1, amount: 999, source: 'spike', from: this.player.position.clone() })
+  }
+  killBotSilently(b: Bot): void {
+    if (!b.alive) return
+    b.health = 0
+    b.alive = false
+    this.botDied(b, { attacker: -1, amount: 999, source: 'spike', from: b.pos.clone(), splash: true })
+  }
+
+  /** Tactical match over: results screen with the round score. */
+  endTactical(won: boolean): void {
+    if (this.mode === 'ended' || !this.tactical) return
+    const t = this.tactical
+    const me = t.state.players.find(p => p.id === 0)!
+    this.match = { ...this.match, phase: won ? 'won' : 'lost' }
+    this.mode = 'ended'
+    this.endT = 0
+    this.slowmo = 0.35
+    this.audio.silenceWorld(0.3)
+    this.audio.play(won ? 'victory' : 'defeat', { volume: 1, jitter: 0, force: true })
+    this.events.wave({ title: won ? 'VITÓRIA' : 'DERROTA', subtitle: `${t.state.score[0]} — ${t.state.score[1]}`, kind: won ? 'victory' : 'phase' })
+    this.input.unlockPointer()
+    const summary: RunSummary = {
+      mode: 'tactical', won, wave: t.state.score[0], waves: t.state.score[1], score: me.kills * 200 + (won ? 3000 : 0),
+      kills: me.kills, headshots: this.headshots, accuracy: this.shots ? this.hits / this.shots : 0, bestRank: `${t.state.score[0]}-${t.state.score[1]}`,
+      time: this.runTime, unranked: true,
+    }
+    window.setTimeout(() => this.events.ended(this.match, summary), 2600)
   }
 
   /** Build the Onslaught rifle pool once (after stage 1); later enemy pools follow their stages. */
@@ -539,7 +620,8 @@ export class Game implements CombatWorld {
     dir.divideScalar(len)
     const ray = new RAPIER.Ray({ x: a.x, y: a.y, z: a.z }, { x: dir.x, y: dir.y, z: dir.z })
     const hit = this.physics.world.castRay(ray, len, true, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, undefined, undefined, undefined, c => this.tags.get(c.handle)?.kind === 'world')
-    return !hit
+    if (hit) return false
+    return !this.tactical?.smokeBlocks(a, b)
   }
 
   groundAt(x: number, z: number, fromY: number): number {
@@ -547,7 +629,8 @@ export class Game implements CombatWorld {
   }
 
   noise(pos: THREE.Vector3, source: number, radius: number): void {
-    for (const b of this.bots) if (b.alive && b.id !== source && b.pos.distanceTo(pos) < radius) b.hear(pos, source)
+    const team = this.tactical ? this.tactical.teamOf(source) : -1
+    for (const b of this.bots) if (b.alive && b.id !== source && (team < 0 || b.team !== team) && b.pos.distanceTo(pos) < radius) b.hear(pos, source)
   }
 
   private get live(): boolean {
@@ -558,7 +641,7 @@ export class Game implements CombatWorld {
     return this.botById.get(target)?.parts.human ?? false
   }
   private nameOf(id: number): string {
-    if (id === 0) return 'YOU'
+    if (id === 0) return this.tactical ? 'VOCÊ' : 'YOU'
     if (id <= -100) return 'HOUND'
     if (id > 0) return this.botById.get(id)?.name ?? '?'
     return 'WORLD'
@@ -571,10 +654,14 @@ export class Game implements CombatWorld {
 
   damage(target: number, info: DamageInfo): DamageResult {
     if (!this.live) return { dealt: 0, killed: false, armor: false }
+    // Tactical: no friendly fire (self-damage from your own grenade still applies).
+    if (this.tactical && info.attacker >= 0 && info.attacker !== target && this.tactical.teamOf(info.attacker) === this.tactical.teamOf(target)) return { dealt: 0, killed: false, armor: false }
     if (target === 0) {
       if (this.mode !== 'playing' || !this.player.alive) return { dealt: 0, killed: false, armor: false }
       const hadArmor = this.player.armor > 0
       let amount = info.attacker === 0 ? info.amount * 0.5 : info.amount
+      // Bot hits on the player read through the tactical loadout multiplier already; headshots hurt more.
+      if (this.tactical && info.headshot) amount *= 1.6
       if (this.onslaught && info.attacker !== 0) amount *= 0.85
       const r = this.player.damage(amount)
       if (r.dealt <= 0) return { dealt: 0, killed: false, armor: false }
@@ -601,7 +688,7 @@ export class Game implements CombatWorld {
     }
     const bot = this.botById.get(target)
     if (!bot || !bot.alive) return { dealt: 0, killed: false, armor: false }
-    if (info.attacker === 0) info = { ...info, amount: info.amount * CONFIG.player.damageScale }
+    if (info.attacker === 0 && !this.tactical) info = { ...info, amount: info.amount * CONFIG.player.damageScale }
     const r = bot.takeDamage(info)
     if (info.attacker === 0 && this.mode === 'playing' && !this.onslaught) this.match = recordShot(this.match, 0, 0, r.dealt)
     if (r.killed) this.botDied(bot, info)
@@ -801,7 +888,17 @@ export class Game implements CombatWorld {
     this.audio.restoreWorld()
     this.audio.setPaused(false)
     this.clearWorld()
+    this.tactical?.dispose()
+    this.tactical = null
     this.gameMode = mode
+    const tac = mode === 'tactical'
+    setWeaponProfile(tac ? 'tactical' : 'arcade')
+    this.props.setActive(!tac)
+    this.pickups.setActive(!tac)
+    this.player.regen = !tac
+    this.player.absorb = tac ? 1 : CONFIG.player.armorAbsorb
+    this.player.speedScale = 1
+    this.player.maxHealth = CONFIG.player.maxHealth
     if (mode === 'deathmatch') this.ensureDmSentinels()
     const count = Math.min(CONFIG.bots.count, this.dmBots.length)
     this.match = { ...createMatch(this.dmBots.slice(0, count).map(b => b.name)), unranked: tuning.unranked }
@@ -818,7 +915,9 @@ export class Game implements CombatWorld {
     this.wavePhase = 'none'
     this.lastKillWeapons = []
     this.grenades = 2
-    if (mode === 'onslaught') {
+    if (tac) {
+      this.tactical = new TacticalMatch(this, this.teamSize)
+    } else if (mode === 'onslaught') {
       this.ensurePool()
       if (this.arsenal.slots.rocket.owned) this.arsenal.slots.rocket.owned = false
       const s = this.chooseSpawn(0)
@@ -838,6 +937,11 @@ export class Game implements CombatWorld {
     this.mode = 'countdown'
     this.countdownT = 3.2
     this.lastCount = 4
+    // Tactical rounds have their own buy-phase countdown.
+    if (tac) {
+      this.mode = 'playing'
+      this.countdownT = 0
+    }
     this.killerId = -1
     this.audio.startAmbience()
     this.audio.playMusic('combat', 2.5, true)
@@ -862,6 +966,13 @@ export class Game implements CombatWorld {
     this.audio.setPaused(false)
   }
   toTitle(): void {
+    this.tactical?.dispose()
+    this.tactical = null
+    setWeaponProfile('arcade')
+    this.props.setActive(true)
+    this.pickups.setActive(true)
+    this.player.regen = true
+    this.player.absorb = CONFIG.player.armorAbsorb
     this.audio.stopAmbience()
     this.audio.playMusic('title', 1.5)
     this.events.perks(null)
@@ -884,6 +995,11 @@ export class Game implements CombatWorld {
     if (this.onslaught) this.audio.silenceWorld(0.2)
     this.audio.play('robot_death', { volume: 0.5, rate: 0.6, force: true })
     this.slowmoT = 1.2
+    if (this.tactical) {
+      if (info.source !== 'spike') this.events.killfeed(this.feedEntry(info.attacker, 0, info))
+      this.tactical.onDeath(0, info.attacker, this.player.position.clone())
+      return
+    }
     if (this.onslaught) {
       this.events.killfeed(this.feedEntry(info.attacker, 0, info))
       window.setTimeout(() => {
@@ -913,6 +1029,16 @@ export class Game implements CombatWorld {
       this.audio.cue(info.headshot ? 'head' : 'kill', 1)
       this.audio.play(info.headshot ? 'headshot' : 'kill_confirm', { volume: 0.8 })
       this.trauma = Math.min(1, this.trauma + (big ? 0.5 : 0.12))
+    }
+    if (this.tactical && bot.team >= 0) {
+      bot.respawnIn = 1e9
+      if (info.source !== 'spike') this.events.killfeed(this.feedEntry(info.attacker, bot.id, info))
+      if (info.attacker === 0) {
+        this.kills += 1
+        if (info.headshot) this.headshots += 1
+      }
+      this.tactical.onDeath(bot.id, info.attacker, bot.pos.clone())
+      return
     }
     if (bot.wave) {
       this.enemyKilled(at, (bot.kind === 'breacher' ? 'scrapper' : bot.kind) as EnemyKind, info, big ? (bot.kind === 'titan' ? 1 : 2.5) : 1, bot.name)
@@ -1225,12 +1351,14 @@ export class Game implements CombatWorld {
 
   // ─── player abilities ─────────────────────────────────────────────────
   get grenadesUnlocked(): boolean {
+    if (this.tactical) return true
     return this.onslaught ? this.wave >= 1 && this.stageGate.isReady(2) : this.stageGate.isReady(2)
   }
 
   private throwGrenade(): void {
     if (this.grenades <= 0 || this.grenadeCd > 0 || !this.grenadesUnlocked) return
     this.grenades -= 1
+    this.tactical?.usedGrenade()
     this.grenadeCd = 0.7
     const eye = this.player.eye(1, tmp).clone()
     const fwd = this.player.forward(tmp2).clone()
@@ -1315,13 +1443,16 @@ export class Game implements CombatWorld {
     const playing = this.mode === 'playing'
     const controllable = playing && this.player.alive
     if (this.mode !== 'attract') {
+      // Tactical movement: no sprint or slide; Shift walks quietly at half speed.
+      const tac = !!this.tactical
+      if (tac) this.player.speedScale = controllable && input.held('sprint') ? 0.5 : 0.88
       const intent = {
         x: controllable ? input.move.x : 0,
         y: controllable ? input.move.y : 0,
         jump: controllable && input.consume('jump'),
-        sprint: controllable && input.held('sprint'),
+        sprint: controllable && !tac && input.held('sprint'),
         ads: controllable && input.held('ads'),
-        slide: controllable && input.consume('slide'),
+        slide: controllable && !tac && input.consume('slide'),
         crouch: controllable && input.held('slide'),
       }
       const res = this.player.step(dt, intent)
@@ -1346,7 +1477,16 @@ export class Game implements CombatWorld {
     }
     if (controllable) {
       const perk = this.wavePhase === 'perk'
-      if (!perk) {
+      if (!perk && this.tactical) {
+        // 1 = primary (if bought), 2 = pistol.
+        if (input.consume('slot1')) {
+          const primary = (['rifle', 'shotgun'] as WeaponId[]).find(id => this.arsenal.slots[id].owned)
+          if (primary) this.arsenal.select(primary)
+        }
+        if (input.consume('slot2')) this.arsenal.select('pistol')
+        input.consume('slot3')
+        if (input.consume('smoke')) this.tactical.throwSmoke()
+      } else if (!perk) {
         if (input.consume('slot1')) this.arsenal.select('rifle')
         if (input.consume('slot2')) this.arsenal.select('shotgun')
         if (input.consume('slot3')) this.arsenal.select('rocket')
@@ -1357,7 +1497,9 @@ export class Game implements CombatWorld {
       if (input.consume('grenade')) this.throwGrenade()
       if (input.consume('overdrive')) this.activateOverdrive()
       const eye = this.player.eye(1, tmp).clone()
-      this.arsenal.step(dt, { fire: input.held('fire'), firePressed: input.consume('fire'), ads: input.held('ads'), reload: input.consume('reload') }, eye, this.player.sprinting)
+      // Holding F to plant/defuse puts the gun away.
+      const channel = !!this.tactical && input.held('interact')
+      this.arsenal.step(dt, { fire: !channel && input.held('fire'), firePressed: input.consume('fire') && !channel, ads: input.held('ads'), reload: input.consume('reload') }, eye, this.player.sprinting)
       if (this.arsenal.shotsThisStep) {
         this.shots += this.arsenal.shotsThisStep
         this.hits += this.arsenal.hitsThisStep
@@ -1368,6 +1510,8 @@ export class Game implements CombatWorld {
       if (low && !this.lowAmmoWarned && s.reserve > 0) this.lowAmmoWarned = true
       if (!low) this.lowAmmoWarned = false
     } else {
+      // Dead in a tactical round: click to cycle the spectated teammate.
+      if (this.tactical && playing && !this.player.alive && input.consume('fire')) this.tactical.nextSpectate()
       input.consume('fire')
       input.consume('reload')
       input.consume('grenade')
@@ -1388,7 +1532,7 @@ export class Game implements CombatWorld {
       this.stepDirector(dt)
     }
     // Deathmatch respawn.
-    if (playing && !this.player.alive && !this.onslaught) {
+    if (playing && !this.player.alive && !this.onslaught && !this.tactical) {
       this.respawnT -= dt
       if (this.respawnT <= 0) {
         const s = this.chooseSpawn(0)
@@ -1400,11 +1544,14 @@ export class Game implements CombatWorld {
     }
     // Robots.
     const targets: Target[] = []
-    if (this.mode !== 'attract') targets.push({ id: 0, pos: this.player.position, vel: this.player.velocity, alive: this.player.alive && this.player.protect <= 0, isPlayer: true, h: 1 - this.player.crouch * 0.45 })
-    if (!this.onslaught) for (const b of this.dmBots) targets.push({ id: b.id, pos: b.pos, vel: b.vel, alive: b.alive, isPlayer: false })
-    const items: ItemInfo[] = this.onslaught ? [] : this.pickups.list.map(p => ({ pos: p.spot.pos, kind: p.spot.kind, available: p.available }))
-    const ctx: BrainContext = { targets, items, hotspots: this.hotspots, playerEye: this.eyePos, playerId: 0, frozen: this.mode === 'countdown' || this.mode === 'ended' }
-    const activeDm = this.mode === 'attract' ? 6 : this.onslaught ? 0 : Math.min(CONFIG.bots.count, this.dmBots.length)
+    const tac = this.tactical
+    if (this.mode !== 'attract') targets.push({ id: 0, pos: this.player.position, vel: this.player.velocity, alive: this.player.alive && this.player.protect <= 0, isPlayer: true, h: 1 - this.player.crouch * 0.45, team: tac ? 0 : undefined })
+    if (tac) for (const b of tac.bots) targets.push({ id: b.id, pos: b.pos, vel: b.vel, alive: b.alive, isPlayer: false, team: b.team })
+    else if (!this.onslaught) for (const b of this.dmBots) targets.push({ id: b.id, pos: b.pos, vel: b.vel, alive: b.alive, isPlayer: false })
+    const items: ItemInfo[] = this.onslaught || tac ? [] : this.pickups.list.map(p => ({ pos: p.spot.pos, kind: p.spot.kind, available: p.available }))
+    const frozen = this.mode === 'countdown' || this.mode === 'ended' || (!!tac && tac.state.phase === 'buy')
+    const ctx: BrainContext = { targets, items, hotspots: this.hotspots, playerEye: this.eyePos, playerId: 0, frozen, objective: tac?.objective }
+    const activeDm = this.mode === 'attract' ? 6 : this.onslaught || tac ? 0 : Math.min(CONFIG.bots.count, this.dmBots.length)
     for (let i = 0; i < this.dmBots.length; i += 1) {
       const b = this.dmBots[i]
       if (i >= activeDm) continue
@@ -1419,6 +1566,14 @@ export class Game implements CombatWorld {
       }
       b.update(dt, ctx, this.dmBots)
       this.botFootsteps(b, dt)
+    }
+    if (tac) {
+      const list = tac.bots
+      for (const b of list) {
+        if (!b.alive) continue
+        b.update(dt, ctx, list)
+        this.botFootsteps(b, dt)
+      }
     }
     if (this.onslaught) {
       const wave = this.bots.filter(b => b.wave)
@@ -1440,7 +1595,10 @@ export class Game implements CombatWorld {
     })
     this.pickups.update(dt, this.time)
     this.collectPickups()
-    if (playing && !this.onslaught) {
+    if (playing && tac) {
+      this.runTime += dt
+      tac.step(dt)
+    } else if (playing && !this.onslaught) {
       this.match = tick(this.match, dt)
       if (this.match.phase !== 'playing') this.endMatch()
     }
@@ -1801,6 +1959,15 @@ export class Game implements CombatWorld {
       const moveK = this.player.sliding > 0 ? 1.1 : this.player.sprinting ? 1.06 : 1
       this.fov(this.fovSetting, this.arsenal.fovScale() * moveK * (this.overdriveT > 0 ? 1.04 : 1))
       this.arsenal.animate(dt, this.lastLook, this.reducedMotion)
+    } else if (this.tactical && this.player.deadTime > 2.2 && this.tactical.spectateTarget()) {
+      // Spectate a living teammate through their eyes.
+      const b = this.tactical.spectateTarget()!
+      for (const a of this.tactical.allies) if (a.alive) a.parts.root.visible = a !== b
+      cam.position.copy(b.eye)
+      const aim = b.aimDir
+      cam.rotation.set(Math.asin(THREE.MathUtils.clamp(aim.y, -1, 1)), Math.atan2(-aim.x, -aim.z), 0, 'YXZ')
+      this.fov(this.fovSetting)
+      this.arsenal.holder.visible = false
     } else {
       const d = Math.min(1, this.player.deadTime / 0.8)
       const base = tmp.copy(this.player.position)
@@ -1903,7 +2070,7 @@ export class Game implements CombatWorld {
       mag: s.mag,
       magSize: a.def.mag,
       reserve: s.reserve,
-      owned: { rifle: a.slots.rifle.owned, shotgun: a.slots.shotgun.owned, rocket: a.slots.rocket.owned },
+      owned: { rifle: a.slots.rifle.owned, shotgun: a.slots.shotgun.owned, rocket: a.slots.rocket.owned, pistol: a.slots.pistol.owned },
       spread: a.spread,
       ads: a.ads,
       reloading: a.reloading > 0 ? 1 - a.reloading / a.reloadTotal : 0,
@@ -1935,7 +2102,12 @@ export class Game implements CombatWorld {
       boss,
       sliding: this.player.sliding > 0,
       runTime: this.runTime,
+      tactical: this.tactical ? this.tactical.hud() : null,
     }
+  }
+
+  minimap(): MinimapState | null {
+    return this.tactical ? this.tactical.minimap() : null
   }
 
   get waveTotal(): number {

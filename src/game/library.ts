@@ -16,7 +16,8 @@ export const TEXTURE_SETS = [
 ] as const
 export type TextureSet = (typeof TEXTURE_SETS)[number]
 
-export const MODELS = ['barrel_03', 'old_military_crate', 'wooden_military_crate', 'medical_box', 'ammo_box', 'propane_tank', 'utility_box_02', 'security_light', 'armor_plate', 'jersey_barrier', 'sandbags', 'frag_grenade', 'rtg_crane', 'reach_stacker'] as const
+/** Only the small gameplay props: the level itself is procedural (see arena.ts). */
+export const MODELS = ['barrel_03', 'medical_box', 'ammo_box', 'propane_tank', 'armor_plate', 'frag_grenade'] as const
 export type ModelId = (typeof MODELS)[number]
 
 export type PbrSet = { map: THREE.Texture; normalMap: THREE.Texture; arm: THREE.Texture }

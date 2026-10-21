@@ -95,7 +95,7 @@ export class StageLoader {
           () => this.audio.loadSamples('assets/sfx/', SAMPLE_STAGES.core),
         ]
       case 2:
-        return [char('sentinel'), async () => { this.staged.hound = (await A.gltf('assets/v4chars/hound.glb')).scene }, async () => { this.staged.sts = (await A.gltf('assets/models/sts_crane.glb')).scene }, ...sfx(SAMPLE_STAGES.drones)]
+        return [char('sentinel'), async () => { this.staged.hound = (await A.gltf('assets/v4chars/hound.glb')).scene }, ...sfx(SAMPLE_STAGES.drones)]
       case 3:
         return [char('exo'), vm('launcher', 'launcher'), vm('rocket', 'rocket'), ...sfx(SAMPLE_STAGES.heavy)]
       case 4:

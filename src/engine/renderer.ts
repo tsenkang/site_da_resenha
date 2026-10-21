@@ -7,18 +7,40 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { FullScreenQuad, Pass } from 'three/examples/jsm/postprocessing/Pass.js'
 import type { Quality } from './save'
 
-type Preset = { pixelRatio: number; shadows: boolean; shadowMap: number; bloom: boolean; samples: number; particles: number }
+/**
+ * `post`: run the EffectComposer (colour grade, half-res smoke, bloom). Off on low, where the scene
+ * draws straight to the canvas and damage/low-health feedback becomes a cheap CSS overlay.
+ * `minPixelRatio`: floor for dynamic resolution, which trades pixels for frame rate on weak GPUs.
+ */
+type Preset = { pixelRatio: number; minPixelRatio: number; shadows: boolean; shadowMap: number; bloom: boolean; post: boolean; samples: number; particles: number }
 export const QUALITY_PRESETS: Record<Quality, Preset> = {
-  low: { pixelRatio: 0.7, shadows: false, shadowMap: 512, bloom: false, samples: 0, particles: 0.35 },
-  medium: { pixelRatio: 0.85, shadows: true, shadowMap: 1024, bloom: false, samples: 0, particles: 0.55 },
-  high: { pixelRatio: 1, shadows: true, shadowMap: 1536, bloom: false, samples: 0, particles: 0.75 },
+  low: { pixelRatio: 0.75, minPixelRatio: 0.5, shadows: false, shadowMap: 512, bloom: false, post: false, samples: 0, particles: 0.3 },
+  medium: { pixelRatio: 0.9, minPixelRatio: 0.6, shadows: true, shadowMap: 1024, bloom: false, post: true, samples: 0, particles: 0.55 },
+  high: { pixelRatio: 1, minPixelRatio: 0.75, shadows: true, shadowMap: 2048, bloom: false, post: true, samples: 0, particles: 0.8 },
 }
+
+/** GPU names that mean an integrated/mobile chip (Chromebooks, old laptops) or software rendering. */
+const WEAK_GPU = /intel\(r\) (hd|uhd) graphics (4|5|6)|intel.*(hd|uhd)|mali|adreno|powervr|swiftshader|llvmpipe|software|microsoft basic|apple gpu|videocore/i
 
 export function suggestQuality(): Quality {
   const cores = navigator.hardwareConcurrency ?? 4
-  if (cores <= 4) return 'low'
-  if (cores <= 8) return 'medium'
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8
+  const gpu = gpuName()
+  if (cores <= 4 || memory <= 4 || WEAK_GPU.test(gpu) || /CrOS/.test(navigator.userAgent)) return 'low'
+  if (cores <= 8 || /intel/i.test(gpu)) return 'medium'
   return 'high'
+}
+
+function gpuName(): string {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl')
+    const ext = gl?.getExtension('WEBGL_debug_renderer_info')
+    const name = ext && gl ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : ''
+    gl?.getExtension('WEBGL_lose_context')?.loseContext()
+    return name
+  } catch {
+    return ''
+  }
 }
 
 /** Final grade in display space: contrast, warm/teal split, vignette, grain, damage tint (no chromatic aberration). */
@@ -156,14 +178,27 @@ export class Renderer {
   private camera?: THREE.PerspectiveCamera
   /** Gameplay-driven grade values. */
   readonly fx = { damage: 0, lowHealth: 0, flash: 0, overdrive: 0 }
+  /** Dynamic resolution: current pixel ratio scale and frame-time average (ms). */
+  dynamicResolution = true
+  private scale = 1
+  private frameAvg = 16
+  private adaptT = 0
+  private readonly overlay: HTMLDivElement
+  private overlayKey = ''
 
   constructor(readonly canvas: HTMLCanvasElement, quality: Quality) {
     this.preset = QUALITY_PRESETS[quality]
     this.gl = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false })
     this.gl.outputColorSpace = THREE.SRGBColorSpace
-    this.gl.toneMapping = THREE.ACESFilmicToneMapping
-    this.gl.toneMappingExposure = 1.05
-    this.gl.shadowMap.type = THREE.PCFSoftShadowMap
+    // Neutral keeps the painted palette saturated (ACES greys out flat stylised colours).
+    this.gl.toneMapping = THREE.NeutralToneMapping
+    this.gl.toneMappingExposure = 1
+    this.gl.shadowMap.type = THREE.PCFShadowMap
+    // Damage / low-health / flash feedback when the grade pass is off (low quality): a CSS layer is
+    // composited by the browser for free instead of costing a full-screen shader pass.
+    this.overlay = document.createElement('div')
+    this.overlay.id = 'fx-overlay'
+    canvas.insertAdjacentElement('afterend', this.overlay)
     this.applyQuality(quality)
     window.addEventListener('resize', () => this.resize())
   }
@@ -177,16 +212,47 @@ export class Renderer {
   get shadowsEnabled(): boolean {
     return this.preset.shadows
   }
+  /** Current render scale (1 = preset pixel ratio), for the settings/debug readout. */
+  get renderScale(): number {
+    return this.scale
+  }
 
   applyQuality(quality: Quality): void {
     this.preset = QUALITY_PRESETS[quality]
     this.gl.shadowMap.enabled = this.preset.shadows
-    this.gl.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.preset.pixelRatio))
+    this.scale = 1
+    this.applyPixelRatio()
     this.composer?.dispose()
     this.bloom?.dispose()
     this.composer = undefined
     this.bloom = undefined
     this.grade = undefined
+    this.overlay.style.display = this.preset.post ? 'none' : ''
+    this.resize()
+  }
+
+  private applyPixelRatio(): void {
+    const ratio = Math.min(window.devicePixelRatio || 1, this.preset.pixelRatio) * this.scale
+    this.gl.setPixelRatio(Math.max(this.preset.minPixelRatio * Math.min(1, window.devicePixelRatio || 1), ratio))
+  }
+
+  /**
+   * Feed the real frame time. Below ~45 fps for a second the render scale drops a step; with
+   * headroom for a few seconds it climbs back. Hysteresis keeps it from oscillating.
+   */
+  adapt(frameMs: number): void {
+    if (!this.dynamicResolution) return
+    this.frameAvg += (Math.min(100, frameMs) - this.frameAvg) * 0.05
+    this.adaptT += frameMs / 1000
+    const floor = this.preset.minPixelRatio / this.preset.pixelRatio
+    let next = this.scale
+    if (this.frameAvg > 22 && this.adaptT > 1) next = Math.max(floor, this.scale - 0.1)
+    else if (this.frameAvg < 14.5 && this.adaptT > 3) next = Math.min(1, this.scale + 0.05)
+    else return
+    this.adaptT = 0
+    if (Math.abs(next - this.scale) < 1e-3) return
+    this.scale = next
+    this.applyPixelRatio()
     this.resize()
   }
 
@@ -243,6 +309,16 @@ export class Renderer {
       camera.aspect = w / h
       camera.updateProjectionMatrix()
     }
+    if (!this.preset.post) {
+      // Direct path: one scene pass, smoke drawn inline (depth-tested) instead of half-res.
+      this.camera = camera
+      camera.layers.enable(HALF_RES_LAYER)
+      this.gl.setRenderTarget(null)
+      this.gl.render(scene, camera)
+      this.updateOverlay()
+      return
+    }
+    camera.layers.disable(HALF_RES_LAYER)
     const composer = this.ensureComposer(scene, camera)
     if (this.grade) {
       const u = this.grade.uniforms
@@ -254,5 +330,15 @@ export class Renderer {
       u.resolution.value.set(w, h)
     }
     composer.render()
+  }
+
+  private updateOverlay(): void {
+    const red = Math.min(0.85, this.fx.damage * 0.55 + this.fx.lowHealth * 0.6)
+    const flash = Math.min(0.8, this.fx.flash)
+    const key = `${red.toFixed(2)}|${flash.toFixed(2)}`
+    if (key === this.overlayKey) return
+    this.overlayKey = key
+    this.overlay.style.setProperty('--fx-red', red.toFixed(2))
+    this.overlay.style.setProperty('--fx-flash', flash.toFixed(2))
   }
 }

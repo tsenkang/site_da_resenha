@@ -51,6 +51,10 @@ export class Player {
   /** Last landing impact speed (for camera dip), consumed by the view. */
   landImpact = 0
   airTime = 0
+  /** Tactical mode: shields soak all damage and never recharge; movement runs at a walk-scale. */
+  regen = true
+  absorb: number = CONFIG.player.armorAbsorb
+  speedScale = 1
   private coyote = 0
   private jumpBuffer = 0
   private readonly tmp = new THREE.Vector3()
@@ -143,7 +147,7 @@ export class Player {
   damage(amount: number): { health: number; armor: number; dealt: number } {
     if (!this.alive || this.protect > 0) return { health: this.health, armor: this.armor, dealt: 0 }
     const before = this.health + this.armor
-    const r = applyDamage(this.health, this.armor, amount)
+    const r = applyDamage(this.health, this.armor, amount, this.absorb)
     this.health = r.health
     this.armor = r.armor
     if (before - (r.health + r.armor) > 0) { this.sinceHit = 0; this.regenerating = false }
@@ -155,7 +159,7 @@ export class Player {
     this.prevPosition.copy(this.position)
     this.protect = Math.max(0, this.protect - dt)
     this.sinceHit += dt
-    if (this.alive && this.sinceHit >= P.armorRegenDelay && this.armor < this.maxArmor) {
+    if (this.regen && this.alive && this.sinceHit >= P.armorRegenDelay && this.armor < this.maxArmor) {
       this.armor = Math.min(this.maxArmor, this.armor + P.armorRegenRate * dt)
       this.regenerating = this.armor < this.maxArmor
     } else this.regenerating = false
@@ -196,8 +200,8 @@ export class Player {
     }
     this.sprinting = intent.sprint && intent.y > 0.3 && !intent.ads && this.grounded && !this.crouching
     const speed = this.crouching && this.sliding <= 0 ? Math.min(P.crouchSpeed, intent.ads ? P.adsSpeed : P.crouchSpeed) : intent.ads ? P.adsSpeed : this.sprinting ? P.sprintSpeed : P.walkSpeed
-    const tx = wx * speed
-    const tz = wz * speed
+    const tx = wx * speed * this.speedScale
+    const tz = wz * speed * this.speedScale
     const slideK = this.sliding > 0 ? 0.06 + 0.2 * (1 - this.sliding / SLIDE_TIME) : 1
     const accel = (this.grounded ? P.acceleration : P.acceleration * P.airControl) * slideK
     const fric = this.grounded ? (moving ? 1 : 1.6) : 0.05

@@ -266,6 +266,45 @@ export function buildRifle(flashTex: THREE.Texture, flameTex: THREE.Texture): Vi
   return { root, muzzle, eject, mag, bolt, sightY, sightZ: -0.05, flash }
 }
 
+/**
+ * Compact polymer-frame pistol (procedural): slide with a coloured stripe, flared grip, sights on
+ * the slide line. `withArms` adds the procedural hands; scanned arms are attached by tripoguns.
+ */
+export function buildPistol(flashTex: THREE.Texture, flameTex: THREE.Texture, withArms = true): ViewModel {
+  const M = weaponMats()
+  const root = new THREE.Group()
+  const b = new Builder()
+  b.box(M.gunmetal, 0.032, 0.034, 0.19, [0, 0.03, -0.06], undefined, 0.006) // slide
+  for (let i = 0; i < 5; i += 1) for (const s of [-1, 1]) b.box(M.dark, 0.003, 0.02, 0.004, [s * 0.016, 0.032, 0.01 + i * 0.007], undefined, 0)
+  b.box(M.red, 0.0335, 0.006, 0.12, [0, 0.022, -0.075], undefined, 0.002) // accent stripe
+  b.box(M.polymer, 0.03, 0.024, 0.16, [0, 0.004, -0.05], undefined, 0.006) // frame
+  b.box(M.polymer, 0.031, 0.115, 0.046, [0, -0.052, 0.028], [-0.26, 0, 0], 0.01) // grip
+  for (let i = 0; i < 4; i += 1) b.box(M.dark, 0.032, 0.004, 0.03, [0, -0.03 - i * 0.02, 0.03 + i * 0.005], [-0.26, 0, 0], 0)
+  b.box(M.polymer, 0.006, 0.006, 0.05, [0, -0.022, -0.02], undefined, 0.002) // trigger guard
+  b.box(M.steel, 0.005, 0.016, 0.005, [0, -0.012, -0.012], [0.3, 0, 0], 0.001) // trigger
+  b.tube(M.steel, 0.0065, 0.0065, 0.02, [0, 0.034, -0.158], 12)
+  b.box(M.dark, 0.004, 0.008, 0.006, [0, 0.051, -0.142], undefined, 0.001) // front sight
+  for (const s of [-1, 1]) b.box(M.dark, 0.006, 0.008, 0.006, [s * 0.006, 0.051, 0.022], undefined, 0.001) // rear notch
+  b.build(root)
+  const mag = new THREE.Group()
+  const mb = new Builder()
+  mb.box(M.dark, 0.026, 0.012, 0.04, [0, 0, 0], undefined, 0.003)
+  mb.build(mag)
+  mag.position.set(0, -0.112, 0.045)
+  root.add(mag)
+  const muzzle = new THREE.Object3D()
+  muzzle.position.set(0, 0.032, -0.172)
+  root.add(muzzle)
+  const eject = new THREE.Object3D()
+  eject.position.set(0.02, 0.042, -0.035)
+  root.add(eject)
+  const flash = flashGroup(flashTex, flameTex, 0.7)
+  flash.position.copy(muzzle.position)
+  root.add(flash)
+  if (withArms) addArms(root, { right: [0, -0.05, 0.03], left: [-0.03, -0.06, -0.01] })
+  return { root, muzzle, eject, mag, magRest: mag.position.clone(), sightY: 0.055, sightZ: 0.02, flash, hip: new THREE.Vector3(0.13, -0.15, -0.34), ads: { x: 0, z: -0.3 } }
+}
+
 export function buildShotgun(flashTex: THREE.Texture, flameTex: THREE.Texture): ViewModel {
   const M = weaponMats()
   const root = new THREE.Group()

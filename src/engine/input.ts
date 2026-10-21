@@ -4,7 +4,7 @@
  */
 export type Action =
   | 'jump' | 'sprint' | 'fire' | 'ads' | 'reload' | 'slot1' | 'slot2' | 'slot3' | 'nextWeapon' | 'prevWeapon'
-  | 'lastWeapon' | 'scoreboard' | 'pause' | 'confirm' | 'back' | 'slide' | 'grenade' | 'overdrive'
+  | 'lastWeapon' | 'scoreboard' | 'pause' | 'confirm' | 'back' | 'slide' | 'grenade' | 'overdrive' | 'interact' | 'buy' | 'smoke'
 export type InputMethod = 'keyboard' | 'gamepad'
 
 const KEY_BINDINGS: Record<Action, string[]> = {
@@ -26,6 +26,10 @@ const KEY_BINDINGS: Record<Action, string[]> = {
   slide: ['KeyC', 'ControlLeft'],
   grenade: ['KeyG'],
   overdrive: ['KeyF'],
+  // Tactical mode: plant/defuse (hold), buy menu, smoke ability.
+  interact: ['KeyF', 'Digit4'],
+  buy: ['KeyB'],
+  smoke: ['KeyE'],
 }
 const PRESS_TTL = 100
 const MOVE_KEYS = { up: ['KeyW', 'ArrowUp'], down: ['KeyS', 'ArrowDown'], left: ['KeyA', 'ArrowLeft'], right: ['KeyD', 'ArrowRight'] }

@@ -1,7 +1,7 @@
 // End-to-end smoke test: build must already exist in dist/ (`pnpm build`).
-// Serves dist/, boots the game in headless Chromium (software GL, low quality) and, for Onslaught
-// and then Deathmatch, starts a run, walks forward and fires, verifies the clock runs, the player
-// moves and shots are counted, then forces the run to end and checks the results screen.
+// Serves dist/, boots the game in headless Chromium (software GL, low quality) and, for Tactical,
+// Onslaught and Deathmatch, starts a run, walks forward and fires, verifies the clock runs, the
+// player moves and shots are counted, then forces the run to end and checks the results screen.
 // Fails on any console error.
 import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -36,7 +36,7 @@ async function waitForServer() {
 const state = page => page.evaluate(() => {
   const { game } = window.__game
   const p = game.player.position
-  const onslaught = game.gameMode === 'onslaught'
+  const onslaught = game.gameMode === 'onslaught' || game.gameMode === 'tactical'
   return {
     mode: game.mode,
     clock: onslaught ? game.runTime : -game.match.timeLeft,
@@ -58,13 +58,21 @@ async function run(context, button, label, n) {
   await page.click(button)
   await page.evaluate(() => (window.__game.input.debugLock = true))
   await page.waitForFunction(() => window.__game.game.mode === 'playing', null, { timeout: 90_000 })
+  // Tactical: buy a rifle in the buy phase (the starting pistol is semi-automatic).
+  if (label === 'tactical') {
+    await page.evaluate(() => {
+      const t = window.__game.game.tactical
+      t.state.players.find(p => p.id === 0).credits = 4000
+      if (!t.buy('rifle').ok) throw new Error('buy failed')
+    })
+  }
   const before = await state(page)
   await page.keyboard.down('KeyW')
   await page.evaluate(() => window.__game.input.debugHeld.add('fire'))
   await page.waitForTimeout(3000)
   await page.evaluate(() => window.__game.input.debugHeld.delete('fire'))
   await page.keyboard.up('KeyW')
-  await page.screenshot({ path: `${out}/smoke-0${2 + n * 2}-${label}-play.png` })
+  await page.screenshot({ path: `${out}/smoke-${String(2 + n * 2).padStart(2, '0')}-${label}-play.png` })
   const after = await state(page)
   const moved = Math.hypot(after.pos.x - before.pos.x, after.pos.z - before.pos.z)
   if (after.mode !== 'playing') throw new Error(`${label}: expected playing, got ${after.mode}`)
@@ -74,10 +82,11 @@ async function run(context, button, label, n) {
   await page.evaluate(() => {
     const g = window.__game.game
     if (g.gameMode === 'onslaught') g.endMatch(false)
+    else if (g.gameMode === 'tactical') g.endTactical(true)
     else g.match = { ...g.match, timeLeft: 0.5 }
   })
   await page.waitForFunction(() => document.body.dataset.screen === 'results', null, { timeout: 60_000 })
-  await page.screenshot({ path: `${out}/smoke-0${3 + n * 2}-${label}-results.png` })
+  await page.screenshot({ path: `${out}/smoke-${String(3 + n * 2).padStart(2, '0')}-${label}-results.png` })
   if (errors.length) throw new Error(`${label}: console errors:\n${errors.join('\n')}`)
   await page.close()
   return `${label} moved ${moved.toFixed(1)} m, ${after.shots} shots, results shown`
@@ -86,12 +95,13 @@ async function run(context, button, label, n) {
 try {
   await waitForServer()
   const args = ['--ignore-gpu-blocklist', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
-  browser = await chromium.launch({ args })
+  browser = await chromium.launch({ args, executablePath: process.env.CHROMIUM_PATH || undefined })
   const context = await browser.newContext({ viewport: { width: 960, height: 540 } })
   await context.addInitScript(() => localStorage.setItem('ironrift.save', JSON.stringify({ version: 1, quality: 'low' })))
-  const a = await run(context, '.screen-title .btn.primary', 'onslaught', 0)
-  const b = await run(context, '.screen-title .btn:not(.primary)', 'deathmatch', 1)
-  console.log(`smoke: OK — ${a}; ${b}`)
+  const a = await run(context, '.screen-title .btn.primary', 'tactical', 0)
+  const b = await run(context, '.screen-title .btn:has-text("SOBREVIVÊNCIA")', 'onslaught', 1)
+  const c = await run(context, '.screen-title .btn:has-text("MATA-MATA")', 'deathmatch', 2)
+  console.log(`smoke: OK — ${a}; ${b}; ${c}`)
   await browser.close()
   cleanup()
   process.exit(0)

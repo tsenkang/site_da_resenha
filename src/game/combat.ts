@@ -4,6 +4,8 @@ import type { ColliderTag } from './arena'
 import type { Effects } from './fx'
 
 export type DamageSource =
+  | 'pistol'
+  | 'spike'
   | 'rifle' | 'shotgun' | 'rocket' | 'pulse' | 'scatter' | 'barrel' | 'fall'
   | 'grenade' | 'plasma' | 'cannon' | 'minigun' | 'slam' | 'kamikaze'
 
