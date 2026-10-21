@@ -32,7 +32,8 @@ export class Assets {
 
   gltf(url: string): Promise<GLTF> {
     return this.memo(url, async () => {
-      const gltf = await this.gltfLoader.loadAsync(url)
+      // Hosts that refuse .glb (claude.ai artifacts) get a build with VITE_GLB_SUFFIX=.wasm.
+      const gltf = await this.gltfLoader.loadAsync(url + (import.meta.env.VITE_GLB_SUFFIX ?? ''))
       gltf.scene.traverse(node => {
         const mesh = node as THREE.Mesh
         if (!mesh.isMesh) return
