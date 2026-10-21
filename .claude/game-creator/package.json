@@ -1,0 +1,38 @@
+{
+  "devDependencies": {
+    "gh-pages": "^6.3.0"
+  },
+  "name": "game-creator",
+  "version": "1.3.0",
+  "description": "The game studio for the agent internet. Build, monetize, and ship 2D (Phaser 3) and 3D (Three.js) browser games with one command. QA runs after every step. Monetize with [Play.fun](https://play.fun) (OpenGameProtocol). Works with **40+ AI coding agents** (via `npx skills add`). Share your play.fun URL on [Moltbook](https://www.moltbook.com/).",
+  "main": "index.js",
+  "directories": {
+    "example": "examples"
+  },
+  "dependencies": {
+    "@imgly/background-removal-node": "^1.4.5",
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-node": "^4.22.0",
+    "@vladmandic/face-api": "^1.7.15",
+    "canvas": "^3.2.1",
+    "sharp": "^0.34.5"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:site": "node site/build.js",
+    "build:gallery": "node site/build.js",
+    "capture:thumbnails": "node site/capture-screenshots.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpusGameLabs/game-creator.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/OpusGameLabs/game-creator/issues"
+  },
+  "homepage": "https://github.com/OpusGameLabs/game-creator#readme"
+}

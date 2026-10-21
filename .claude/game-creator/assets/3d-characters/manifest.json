@@ -1,0 +1,71 @@
+{
+  "characters": [
+    {
+      "name": "Soldier",
+      "file": "models/Soldier.glb",
+      "scale": 1,
+      "facingOffset": 3.141592653589793,
+      "clipMap": { "idle": "Idle", "walk": "Walk", "run": "Run" },
+      "license": "MIT",
+      "source": "three.js repo"
+    },
+    {
+      "name": "Xbot",
+      "file": "models/Xbot.glb",
+      "scale": 1,
+      "facingOffset": 0,
+      "clipMap": { "idle": "idle", "walk": "walk", "run": "run" },
+      "license": "MIT",
+      "source": "three.js repo"
+    },
+    {
+      "name": "Robot",
+      "file": "models/RobotExpressive.glb",
+      "scale": 1,
+      "facingOffset": 0,
+      "clipMap": { "idle": "Idle", "walk": "Walking", "run": "Running" },
+      "license": "MIT",
+      "source": "three.js repo"
+    },
+    {
+      "name": "Fox",
+      "file": "models/Fox.glb",
+      "scale": 0.02,
+      "facingOffset": 0,
+      "clipMap": { "idle": "Survey", "walk": "Walk", "run": "Run" },
+      "license": "CC0 / CC-BY 4.0",
+      "source": "KhronosGroup glTF-Sample-Assets"
+    },
+    {
+      "name": "Trump",
+      "file": "models/trump.glb",
+      "scale": 1,
+      "facingOffset": 3.141592653589793,
+      "type": "gesture",
+      "clipMap": {
+        "idle": "root|TrumpStillLook_BipTrump",
+        "clap": "root|TrumpClap1_BipTrump",
+        "dance": "root|Trumpdance1_BipTrump",
+        "point": "root|TrumpPoint_BipTrump",
+        "talk": "root|TrumpTalk1_BipTrump",
+        "twist": "root|TrumpTwist_BipTrump"
+      },
+      "license": "CC Attribution",
+      "source": "Sketchfab (denysalmaral)",
+      "sourceUrl": "https://sketchfab.com/3d-models/donald-trump-1-motion-moves-plask-3d-ver-1-e81df3dbc0f9475293131a159285b5f3"
+    },
+    {
+      "name": "Biden",
+      "file": "models/biden.glb",
+      "scale": 1,
+      "facingOffset": 0,
+      "type": "gesture",
+      "clipMap": {
+        "idle": "mixamo.com"
+      },
+      "license": "CC Attribution",
+      "source": "Sketchfab (vicente betoret ferrero)",
+      "sourceUrl": "https://sketchfab.com/3d-models/toon-joe-biden-animated-dd92c87473734213b7a9672402d408a3"
+    }
+  ]
+}
