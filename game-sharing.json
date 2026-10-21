@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "title": "RiftStrike — Arena Cartoon",
+  "description": "FPS 3D competitivo e leve para navegador, com partidas rápidas, visual low-poly cartonizado, respawn, feedback de acerto e placar online casual.",
+  "defaultCaptions": {
+    "x": "RiftStrike: mire, atire e domine a Arena Cartoon.",
+    "facebook": "RiftStrike é um FPS 3D leve e competitivo para navegador.",
+    "reddit": "RiftStrike — partidas rápidas, visual low-poly e placar de eliminações.",
+    "discord": "Entre na Arena Cartoon de RiftStrike e dispute o topo do placar."
+  },
+  "assets": {
+    "og": "assets/share/og.png",
+    "favicon": "assets/share/favicon.png"
+  }
+}

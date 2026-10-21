@@ -1,0 +1,9 @@
+{
+  "identity": "guest",
+  "boards": [
+    {
+      "id": "riftstrike-frags-v1",
+      "rulesVersion": "v1"
+    }
+  ]
+}

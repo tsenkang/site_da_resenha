@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#101b2c" />
+    <title>RiftStrike — Arena Cartoon</title>
+    <meta name="description" content="RiftStrike é um FPS 3D competitivo e leve para navegador, com visual low-poly cartonizado, partidas rápidas, respawn, placar e combate responsivo." />
+    <link rel="icon" type="image/png" href="/assets/share/favicon.png" />
+    <link rel="preload" href="./fonts/ChakraPetch-700.latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="./fonts/Figtree-VF.subset.woff2" as="font" type="font/woff2" crossorigin />
+    <style>
+      /* Instant first paint before any JS: a game-specific solid loader avoids inherited showcase art. */
+      html, body { margin: 0; height: 100%; background: #101b2c; overflow: hidden; }
+      #boot-ph { position: fixed; inset: 0; background: radial-gradient(circle at 72% 32%, rgba(94, 231, 194, 0.24), transparent 28%), linear-gradient(135deg, #101b2c, #163854 55%, #0c1728); }
+    </style>
+  </head>
+  <body>
+    <div id="boot-ph"></div>
+    <canvas id="game"></canvas>
+    <div id="ui"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
