@@ -1,95 +1,76 @@
-# game-3d starter (three.js + Rapier)
+# RiftStrike — Protocolo Spike
 
-A complete, small 3D game — **Sky Cores**: run, jump and dash across floating islands to collect
-every energy core before the clock runs out, avoiding patrol drones. It exists to be *changed*:
-the engine layer is fixed scaffolding, the game layer is the part you rewrite.
+FPS tático 5v5 no navegador, inspirado no Valorant e feito para rodar em PC fraco e Chromebook.
+Feito com Three.js (gráficos) e Rapier (física).
+
+- **Modo Tático (Spike)**: atacantes contra defensores, de 2v2 a 5v5 contra bots. Tem fase de
+  compra com créditos, spike para plantar no local A ou B e desarmar, troca de lado no meio da
+  partida e vence quem fizer 5 rodadas primeiro.
+- **Mata-mata** e **Sobrevivência** (8 ondas e um chefe) continuam disponíveis.
+- **Mapa "Base Aurora"**: dois locais de spike (A e B), meio, corredores e barreiras de spawn
+  na fase de compra.
+- **Base do online pronta**: protocolo, salas de 2v2 a 5v5 e servidor com autoridade. Veja
+  [docs/ONLINE.md](docs/ONLINE.md).
+
+## Rodar
 
 ```bash
 pnpm install
-pnpm dev      # http://localhost:5173
-pnpm build    # typecheck + production build + JS/font budgets + total-size report
-pnpm test     # unit tests (rules, save, i18n, level)
-pnpm smoke    # after build: headless browser playthrough + screenshots in shots/
+pnpm dev          # abre em http://localhost:3000
+pnpm build        # gera a versão final em dist/ (site estático)
+pnpm test         # testes de regras, economia, lobby e servidor
+pnpm smoke        # depois do build: abre o jogo num navegador sem tela e joga os 3 modos
+pnpm server       # servidor online (ws://localhost:8787), veja docs/ONLINE.md
 ```
 
-## Layout
+O `pnpm smoke` precisa do Chromium do Playwright. Se ele já estiver instalado em outro lugar,
+use `CHROMIUM_PATH=/caminho/do/chromium pnpm smoke`.
 
-| Path | Role | Change it? |
-| --- | --- | --- |
-| `src/engine/loop.ts` | Fixed 60 Hz simulation + interpolated rendering | Rarely |
-| `src/engine/input.ts` | Keyboard/mouse, gamepad, touch → one action state | Add actions here |
-| `src/engine/physics.ts` | Rapier world, collider helpers, render interpolation | Rarely |
-| `src/engine/renderer.ts` | WebGL renderer, quality presets, bloom | Rarely |
-| `src/engine/audio.ts` | Music/SFX buses, synthesized SFX, `load()` for files | Add sounds |
-| `src/engine/save.ts` | Versioned localStorage save + leaderboard | Add fields + parsing |
-| `src/engine/i18n.ts` | en / zh-CN, browser detection, saved choice wins | Rarely |
-| `src/engine/assets.ts` | Cached GLTF/texture loading with progress | Use it for models |
-| `src/game/config.ts` | Source defaults and active gameplay configuration | Yes |
-| `src/game/tuning.ts` | Tweak catalog, atomic validation and activation boundaries | Yes |
-| `src/game/rules.ts` | Pure score/lives/clock/win rules (unit tested) | Yes |
-| `src/game/world.ts` | Level layout, sky, lights, islands, stones, lifts | Yes |
-| `src/game/player.ts` | Character controller + game feel + procedural model | Yes |
-| `src/game/*.ts` | Camera, cores, drones, particles, scene orchestration | Yes |
-| `src/ui/`, `src/styles/main.css` | HTML/CSS title, HUD, pause, settings, results | Yes |
-| `src/i18n/*.json` | All player-facing text (both files, same keys) | Yes |
+## Controles
 
-## Rules for changes
+| Tecla | Ação |
+| --- | --- |
+| WASD + mouse | mover e mirar |
+| Clique esquerdo / direito | atirar / mirar |
+| R | recarregar |
+| 1 / 2 | arma principal / pistola |
+| B | loja (na fase de compra) |
+| F ou 4 (segure) | plantar ou desarmar a spike |
+| E / G | fumaça / granada |
+| Shift | andar em silêncio |
+| C ou Ctrl | agachar |
+| Tab (segure) | placar |
+| Esc | pausar |
 
-- **Simulation in `step()`, visuals in `render()`/`animate()`.** Gameplay state only changes in
-  fixed steps; read presses there with `input.consume(action)`, never `pressed()`.
-- **Rules stay pure.** Scoring, win/lose and progression go in `rules.ts` with tests; scene code
-  reports events and reads state.
-- **Every visible string is an i18n key** in both `en.json` and `zh-CN.json` (a test enforces
-  matching keys and placeholders). English and Chinese use the bundled Manus CC0 fonts in `public/fonts/`;
-  if you add new Chinese text, check it renders (missing glyphs fall back to system fonts).
-- **UI is HTML/CSS**, not canvas. Keep the game look: display font, outlined text, hard offset
-  shadows, skewed buttons, notched panels. Menus must stay keyboard/gamepad navigable
-  (`data-nav` on focusable controls).
-- **Colliders come from the helpers** in `physics.ts` with the same sizes as the meshes.
-- Keep `npm run build` within the JS/font budgets (`scripts/check-size.mjs`) and `npm run smoke` green.
-  Total game asset size is reported without a hard limit.
+## Desempenho (PC fraco e Chromebook)
 
-## Controls
+- **Qualidade automática**: no primeiro acesso o jogo detecta a placa de vídeo, a memória e os
+  núcleos do processador. Chromebooks e placas integradas fracas começam no modo **Baixo**.
+- **Baixo**: desenha direto na tela, sem pós-processamento e sem sombras. O efeito vermelho de
+  dano vira uma camada CSS, que não pesa na placa de vídeo.
+- **Resolução dinâmica**: se o FPS cair abaixo de cerca de 45, a resolução interna baixa um
+  pouco; quando sobra folga, ela volta a subir.
+- **Mapa leve**: geometria procedural com materiais simples e texturas pequenas, juntada por
+  material. O mapa inteiro custa umas dez chamadas de desenho.
+- **Modelos mais leves**: personagens de 50 mil para 12,5 mil triângulos, texturas de
+  1024 para 512 px, armas dos bots com 3 mil triângulos, e bots fora da tela nem são desenhados.
+  O download total caiu de 25,4 MB para 14,5 MB.
 
-Keyboard/mouse: WASD move, mouse look (click to capture), Space jump (hold = higher), Shift
-sprint, F or left click dash, Esc pause. Gamepad: left stick, right stick, A jump, X/RB dash,
-LB sprint, Start pause. Touch: left-side stick, right-side drag to look, JUMP / DASH buttons.
+## Onde fica cada coisa
 
-## Credits
+| Caminho | O que é |
+| --- | --- |
+| `src/game/tactical.ts` | regras do modo tático (rodadas, economia, loja, spike), código puro e testado |
+| `src/game/tacticalMatch.ts` | diretor da partida: times, bots com objetivos, plantar/desarmar, fumaça, espectador |
+| `src/game/arena.ts` | o mapa Base Aurora (geometria, colisões, navegação dos bots, locais A/B) |
+| `src/game/bots.ts` | IA dos bots (times, objetivos, combate) |
+| `src/game/config.ts` | armas (perfil arcade e perfil tático) e ajustes gerais |
+| `src/ui/tacticalHud.ts` | HUD tático: placar, minimapa, loja, placar do Tab |
+| `src/engine/renderer.ts` | qualidade gráfica, resolução dinâmica, caminho sem pós-processamento |
+| `src/net/*`, `server/match/*` | base do modo online |
+| `tests/` | testes (regras táticas, rede, salvamento, ondas) |
 
-Fonts: ManusCC0 (regular, medium, bold) and ManusCC0 Sans CJK SC — CC0 1.0.
-The bundled Chinese font preserves its 6,547-codepoint repertoire; no font download is required.
-See `public/fonts/ManusCC0-LICENSE.txt`.
-Libraries: three.js (MIT), Rapier (Apache-2.0).
+## Créditos
 
-## Preview Tweak
-
-`src/game/tuning.ts` is this game's parameter manager. The Addon panel reads its
-catalog; `config.ts` owns source defaults and the active configuration used by gameplay.
-When adapting the game, keep only controls with actual gameplay consumers, and preserve
-stable IDs for unchanged parameters. Define ranges, units and the correct activation
-boundary. Register through `scripts/manus-tuning/adapter.js` only under `import.meta.env.DEV`.
-Keep the Vite plugin and `scripts/__manus__/` helpers intact; production builds exclude
-the browser adapter and never inject the bridge.
-
-Apply changes preview state only. `LIVE` parameters are read in the next game update;
-`NEXT_ACTION` parameters activate at the relevant jump/dash start; `NEXT_RUN` parameters
-activate in `Game.start`. Model/collider size and gravity are not exposed by this version.
-Do not mutate the source defaults or persist Apply to localStorage. Save with Manus
-checks the snapshot against the current catalog and edits `DEFAULT_CONFIG`, then uses
-the normal Three.js Web build/checkpoint workflow. Keep existing gameplay parameter
-managers when extending an older project; do not create a competing store.
-
-For server-authoritative multiplayer, expose local cosmetic controls only until gameplay
-parameters have explicit server-side development support. The descriptor's GAMEPLAY flag
-is a classification, not server authorization or ranked-score enforcement.
-
-The preview plugin reads the ignored `.manus-webdev/preview-identity.json` v1 projection
-written by the Runtime when initializing, attaching or restoring this project. It contains
-only the resource ID and canonical project directory; private Host bindings and starter
-receipts are not template dependencies. Missing identity disables the bridge.
-The manager latches `tuning.unranked` when non-default GAMEPLAY values become active and
-resets it only at the next run using that run's active values. `Game` snapshots this onto
-`RunState.unranked`; local results cannot save such runs. Preserve this guard when changing
-scoring. When adding online leaderboards, skip submissions for unranked runs and enforce
-eligibility in the authoritative server too; client flags are not proof of a fair score.
+Fontes: Bebas Neue (Dharma Type), Chakra Petch e Figtree, todas na licença SIL OFL
+(veja `public/fonts/`). Bibliotecas: three.js (MIT), Rapier (Apache-2.0), ws (MIT).
