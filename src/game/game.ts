@@ -16,7 +16,7 @@ import {
 } from './onslaught'
 import { Player } from './player'
 import { Pickups, Props } from './props'
-import { addOutline, wornPaint, type RobotLook } from './robot'
+import { addOutline, tintCharacter, wornPaint, type RobotLook } from './robot'
 import { PlayerBody } from './playerbody'
 import { computeScore, createMatch, leader, placement, recordShot, registerKill, splashDamage, standings, tick, type MatchState, type Medal } from './rules'
 import type { Staged, StageId } from './stages'
@@ -437,6 +437,7 @@ export class Game implements CombatWorld {
     let b = this.tacBots.get(id)
     if (!b) {
       b = team === 0 ? this.makeBot(id, name, 'striker', '#1f6f73', '#48f0d8', 'operator') : this.makeBot(id, name, 'striker', '#7a2a2a', '#ff4655', 'breacher')
+      tintCharacter(b.parts.root, team === 0 ? '#3ce0c4' : '#ff4655')
       if (team === 1) addOutline(b.parts.root, '#ff4655')
       this.tacBots.set(id, b)
     }
@@ -918,6 +919,8 @@ export class Game implements CombatWorld {
     this.grenades = 2
     if (tac) {
       this.tactical = new TacticalMatch(this, this.teamSize)
+      // Compile the tactical bots, outlines, spike and smoke now (buy phase) instead of on first sight.
+      this.prewarm()
     } else if (mode === 'onslaught') {
       this.ensurePool()
       if (this.arsenal.slots.rocket.owned) this.arsenal.slots.rocket.owned = false
@@ -1446,7 +1449,7 @@ export class Game implements CombatWorld {
     if (this.mode !== 'attract') {
       // Tactical movement: no sprint or slide; Shift walks quietly at half speed.
       const tac = !!this.tactical
-      if (tac) this.player.speedScale = controllable && input.held('sprint') ? 0.5 : 0.88
+      if (tac) this.player.speedScale = controllable && input.held('sprint') ? 0.55 : 1
       const intent = {
         x: controllable ? input.move.x : 0,
         y: controllable ? input.move.y : 0,
@@ -1941,15 +1944,15 @@ export class Game implements CombatWorld {
     if (this.mode === 'attract') {
       this.attractT += frameDt
       const a = this.attractT * 0.05
-      const R = 30
-      cam.position.set(Math.cos(a) * R, 9 + Math.sin(this.attractT * 0.13) * 2.5, Math.sin(a) * R)
+      const R = 52
+      cam.position.set(Math.cos(a) * R, 20 + Math.sin(this.attractT * 0.13) * 3, Math.sin(a) * R)
       cam.up.set(0, 1, 0)
       cam.lookAt(0, 1.5, 0)
       this.fov(62)
     } else if (this.player.alive) {
       const eye = this.player.eye(alpha, this.eyePos)
       const speed = this.player.grounded ? this.player.speed2d : 0
-      const bobK = CONFIG.camera.bob * (this.reducedMotion ? 0.3 : 1) * (1 - this.arsenal.ads * 0.8) * (this.player.sliding > 0 ? 0.2 : 1)
+      const bobK = CONFIG.camera.bob * (this.tactical ? 0.45 : 1) * (this.reducedMotion ? 0.3 : 1) * (1 - this.arsenal.ads * 0.8) * (this.player.sliding > 0 ? 0.2 : 1)
       eye.y += Math.sin(this.time * (5 + speed * 1.1) * 2) * 0.012 * Math.min(1.4, speed / 6) * bobK
       cam.position.copy(eye)
       const strafe = this.mode === 'playing' ? this.input.move.x : 0

@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { Site, SiteId, TeamSide } from './arena'
+import { MAP_SCALE, type Site, type SiteId, type TeamSide } from './arena'
 import type { Bot, Objective } from './bots'
 import type { Game } from './game'
 import {
@@ -52,22 +52,23 @@ type Smoke = { mesh: THREE.Mesh; pos: THREE.Vector3; r: number; life: number }
 type Thrown = { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; fuse: number }
 
 /** Defensive anchor spots per site: where to stand and which entrance to watch. */
+const S = MAP_SCALE
 const ANCHORS: Record<SiteId, Objective[]> = {
   A: [
-    { x: -38, z: -30, lookX: -34, lookZ: -6 },
-    { x: -24, z: -28, lookX: -14, lookZ: -10 },
-    { x: -33, z: -36, lookX: -34, lookZ: -6 },
+    { x: -38 * S, z: -30 * S, lookX: -34 * S, lookZ: -6 * S },
+    { x: -24 * S, z: -28 * S, lookX: -14 * S, lookZ: -10 * S },
+    { x: -33 * S, z: -36 * S, lookX: -34 * S, lookZ: -6 * S },
   ],
   B: [
-    { x: 38, z: -30, lookX: 34, lookZ: -6 },
-    { x: 24, z: -28, lookX: 14, lookZ: -10 },
-    { x: 33, z: -36, lookX: 34, lookZ: -6 },
+    { x: 38 * S, z: -30 * S, lookX: 34 * S, lookZ: -6 * S },
+    { x: 24 * S, z: -28 * S, lookX: 14 * S, lookZ: -10 * S },
+    { x: 33 * S, z: -36 * S, lookX: 34 * S, lookZ: -6 * S },
   ],
 }
 /** Attacker staging points before the execute (end of each main) and the mid push. */
-const STAGING: Record<SiteId, { x: number; z: number }> = { A: { x: -34, z: 2 }, B: { x: 34, z: 2 } }
-const MID = { x: 0, z: -8 }
-const EXECUTE_AFTER = 18
+const STAGING: Record<SiteId, { x: number; z: number }> = { A: { x: -34 * S, z: 2 * S }, B: { x: 34 * S, z: 2 * S } }
+const MID = { x: 0, z: -8 * S }
+const EXECUTE_AFTER = 22
 
 const tmp = new THREE.Vector3()
 
@@ -96,6 +97,7 @@ export class TacticalMatch {
   private seenT = 0
   private hint: string | null = null
   private detonated = false
+  private readonly smokeWarm: THREE.Mesh
 
   constructor(private readonly game: Game, teamSize: TeamSize) {
     this.teamSize = teamSize
@@ -113,6 +115,10 @@ export class TacticalMatch {
     this.spikeGlow = built.glow
     this.spikeMesh.visible = false
     game.scene.add(this.spikeMesh)
+    // A hidden smoke dome so its material compiles with the match, not on the first throw.
+    this.smokeWarm = new THREE.Mesh(smokeGeometry(), smokeMaterial())
+    this.smokeWarm.visible = false
+    game.scene.add(this.smokeWarm)
     this.setupRound()
   }
 
@@ -189,6 +195,8 @@ export class TacticalMatch {
   private applyBotLoadout(b: Bot, l: Loadout): void {
     b.armor = l.shield
     b.absorb = 1
+    b.strafeMul = 0.3
+    b.aimMul = 1.3
     // Tactical bots all carry a rifle model; the purchased weapon sets how hard and fast they hit.
     if (l.weapon === 'rifle') {
       b.dmgMul = 3.2
@@ -492,12 +500,12 @@ export class TacticalMatch {
       const lurk = this.teamSize >= 4 && idx === this.teamSize - 1
       const target: SiteId = lurk ? (this.targetSite === 'A' ? 'B' : 'A') : this.targetSite
       if (!execute) {
-        if (idx === 2 && this.teamSize >= 3) return { ...MID, lookX: 0, lookZ: -30 }
+        if (idx === 2 && this.teamSize >= 3) return { ...MID, lookX: 0, lookZ: -30 * S }
         const s = spread(STAGING[target], 1.8)
         return { ...s, lookX: siteCenter(target).x, lookZ: siteCenter(target).z }
       }
       const c = siteCenter(target)
-      return st.spike.carrier === b.id ? { x: c.x + 1.5, z: c.z + 1.5 } : { ...spread(c, 4.5), lookX: c.x, lookZ: c.z + 20 }
+      return st.spike.carrier === b.id ? { x: c.x + 1.5, z: c.z + 1.5 } : { ...spread(c, 5.5), lookX: c.x, lookZ: c.z + 26 }
     }
     // Defenders.
     if (st.spike.planted) return spread(this.spikePos, idx === 0 ? 0.6 : 3)
@@ -675,6 +683,7 @@ export class TacticalMatch {
   dispose(): void {
     this.clearSmokes()
     this.game.scene.remove(this.spikeMesh)
+    this.game.scene.remove(this.smokeWarm)
     this.game.arena.setBarriers(false)
     for (const b of this.bots) b.hide()
   }

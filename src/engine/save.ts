@@ -23,6 +23,8 @@ export type SaveData = {
   playerName: string
   /** Tactical mode team size (2v2 … 5v5). */
   teamSize: 2 | 3 | 4 | 5
+  /** Small FPS readout in the HUD corner. */
+  showFps: boolean
   leaderboard: ScoreEntry[]
 }
 
@@ -44,6 +46,7 @@ export function defaultSave(): SaveData {
     tutorialDone: false,
     playerName: 'PLAYER',
     teamSize: 5,
+    showFps: false,
     leaderboard: [],
   }
 }
@@ -77,6 +80,7 @@ export function parseSave(raw: string | null): SaveData {
     reducedMotion: data.reducedMotion === true,
     tutorialDone: data.tutorialDone === true,
     playerName: typeof data.playerName === 'string' && data.playerName.trim() ? data.playerName.trim().slice(0, 16) : base.playerName,
+    showFps: data.showFps === true,
     teamSize: data.teamSize === 2 || data.teamSize === 3 || data.teamSize === 4 || data.teamSize === 5 ? data.teamSize : base.teamSize,
     leaderboard: board
       .filter((e): e is ScoreEntry => !!e && typeof e === 'object' && typeof (e as ScoreEntry).name === 'string' && Number.isFinite((e as ScoreEntry).score))

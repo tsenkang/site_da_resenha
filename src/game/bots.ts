@@ -92,6 +92,9 @@ export class Bot {
   /** Loadout scaling (tactical economy): damage per hit and time between shots. */
   dmgMul = 1
   rateMul = 1
+  /** Tactical style: strafe less while shooting (stop to shoot) and a wider aim cone. */
+  strafeMul = 1
+  aimMul = 1
   /** Share of damage the armor soaks (tactical shields soak everything). */
   absorb = CONFIG.player.armorAbsorb
   /** Seconds the director has kept this bot still (planting / defusing). */
@@ -533,7 +536,7 @@ export class Bot {
           this.strafeT = rand(0.45, 1.5) * (this.heavy ? 2 : 1)
         }
         const side = tmpC.crossVectors(to, up).multiplyScalar(this.strafe)
-        desired.addScaledVector(side, this.heavy ? 0.35 : 0.85)
+        desired.addScaledVector(side, this.heavy ? 0.35 : 0.85 * this.strafeMul)
         if (dist > maxR) {
           this.repath -= dt
           if (this.repath <= 0 || this.path.length === 0) {
@@ -821,7 +824,7 @@ export class Bot {
     const tgtSpeed = Math.hypot(tgt.vel.x, tgt.vel.z)
     const mySpeed = Math.hypot(this.vel.x, this.vel.z)
     const focusK = THREE.MathUtils.lerp(1.9, 1, Math.min(1, this.focus / 1.3))
-    const err = CONFIG.bots.aimError * this.skill * this.k.spread * (1 + tgtSpeed * 0.07) * (1 + mySpeed * 0.04) * focusK
+    const err = CONFIG.bots.aimError * this.aimMul * this.skill * this.k.spread * (1 + tgtSpeed * 0.07) * (1 + mySpeed * 0.04) * focusK
     const eye = this.eye.clone()
     const aimAt = tmpB.copy(tgt.pos).setY(tgt.pos.y + (Math.random() < 0.15 ? 1.6 : 1.2))
     const base = aimAt.sub(eye).normalize()

@@ -1,5 +1,5 @@
 import type { Audio } from '../engine/audio'
-import type { MapRect, Site } from '../game/arena'
+import { HALF_X, HALF_Z, type MapRect, type Site } from '../game/arena'
 import { SHOP, type BuyResult, type Loadout, type ShopItem } from '../game/tactical'
 import type { MinimapState, TacticalHud as HudData } from '../game/tacticalMatch'
 
@@ -106,7 +106,7 @@ export class TacticalHudView {
 
   private toMap(x: number, z: number): [number, number] {
     const S = this.mapCanvas.width
-    return [((x + 48) / 96) * S, ((z + 52) / 104) * S]
+    return [((x + HALF_X + 2) / (HALF_X * 2 + 4)) * S, ((z + HALF_Z + 2) / (HALF_Z * 2 + 4)) * S]
   }
 
   private buildMapBase(): HTMLCanvasElement {
@@ -116,8 +116,8 @@ export class TacticalHudView {
     const g = c.getContext('2d')!
     g.fillStyle = 'rgba(16, 24, 33, 0.82)'
     g.fillRect(0, 0, S, S)
-    const [fx0, fz0] = this.toMap(-46, -50)
-    const [fx1, fz1] = this.toMap(46, 50)
+    const [fx0, fz0] = this.toMap(-HALF_X, -HALF_Z)
+    const [fx1, fz1] = this.toMap(HALF_X, HALF_Z)
     g.fillStyle = 'rgba(200, 214, 222, 0.30)'
     g.fillRect(fx0, fz0, fx1 - fx0, fz1 - fz0)
     for (const s of this.sites) {

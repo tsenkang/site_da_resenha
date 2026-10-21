@@ -229,6 +229,7 @@ async function boot(): Promise<void> {
       }
       g.render(alpha, frameSeconds)
       ui.tick(frameSeconds)
+      ui.fps(frameSeconds, save.data.showFps)
       if (g.mode === 'playing' || g.mode === 'countdown' || g.mode === 'ended' || g.mode === 'paused') {
         const pxPerRad = window.innerHeight / 2 / Math.tan((g.camera.fov * Math.PI) / 360)
         const board = input.held('scoreboard')

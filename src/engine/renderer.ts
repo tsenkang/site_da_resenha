@@ -15,8 +15,8 @@ import type { Quality } from './save'
 type Preset = { pixelRatio: number; minPixelRatio: number; shadows: boolean; shadowMap: number; bloom: boolean; post: boolean; samples: number; particles: number }
 export const QUALITY_PRESETS: Record<Quality, Preset> = {
   low: { pixelRatio: 0.75, minPixelRatio: 0.5, shadows: false, shadowMap: 512, bloom: false, post: false, samples: 0, particles: 0.3 },
-  medium: { pixelRatio: 0.9, minPixelRatio: 0.6, shadows: true, shadowMap: 1024, bloom: false, post: true, samples: 0, particles: 0.55 },
-  high: { pixelRatio: 1, minPixelRatio: 0.75, shadows: true, shadowMap: 2048, bloom: false, post: true, samples: 0, particles: 0.8 },
+  medium: { pixelRatio: 0.9, minPixelRatio: 0.6, shadows: true, shadowMap: 1024, bloom: false, post: true, samples: 2, particles: 0.55 },
+  high: { pixelRatio: 1, minPixelRatio: 0.75, shadows: true, shadowMap: 2048, bloom: false, post: true, samples: 4, particles: 0.8 },
 }
 
 /** GPU names that mean an integrated/mobile chip (Chromebooks, old laptops) or software rendering. */
@@ -188,7 +188,8 @@ export class Renderer {
 
   constructor(readonly canvas: HTMLCanvasElement, quality: Quality) {
     this.preset = QUALITY_PRESETS[quality]
-    this.gl = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false })
+    // MSAA on the default framebuffer is cheap on desktop GPUs; weak machines (low) skip it.
+    this.gl = new THREE.WebGLRenderer({ canvas, antialias: quality !== 'low', powerPreference: 'high-performance', stencil: false })
     this.gl.outputColorSpace = THREE.SRGBColorSpace
     // Neutral keeps the painted palette saturated (ACES greys out flat stylised colours).
     this.gl.toneMapping = THREE.NeutralToneMapping

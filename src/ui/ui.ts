@@ -165,6 +165,26 @@ export class Ui {
     if (screen === 'title') this.refreshTitle()
   }
 
+  private fpsEl?: HTMLElement
+  private fpsT = 0
+  private fpsN = 0
+  /** Frames-per-second readout (top-right), refreshed twice a second when enabled. */
+  fps(dt: number, on: boolean): void {
+    if (!on) {
+      if (this.fpsEl) this.fpsEl.hidden = true
+      return
+    }
+    this.fpsEl ??= this.root.appendChild(el('div', 'fps'))
+    this.fpsEl.hidden = false
+    this.fpsT += dt
+    this.fpsN += 1
+    if (this.fpsT >= 0.5) {
+      this.fpsEl.textContent = `${Math.round(this.fpsN / this.fpsT)} FPS`
+      this.fpsT = 0
+      this.fpsN = 0
+    }
+  }
+
   /** Per-frame: animate the HUD spark layer (also on menus). */
   tick(dt: number): void {
     this.sparks.update(dt)
@@ -789,6 +809,7 @@ export class Ui {
     toggle(this.t.t('settings.invertY'), d.invertY, v => this.actions.settings({ invertY: v }))
     toggle(this.t.t('settings.reducedMotion'), d.reducedMotion, v => this.actions.settings({ reducedMotion: v }))
     toggle(this.t.t('settings.muted'), d.muted, v => this.actions.settings({ muted: v }))
+    toggle('Mostrar FPS', d.showFps, v => this.actions.settings({ showFps: v }))
   }
 
   // ─── controls ────────────────────────────────────────────────────────

@@ -645,3 +645,24 @@ export function addOutline(root: THREE.Object3D, color: string, width = 0.0032):
     m.parent?.add(o)
   }
 }
+
+/**
+ * Brighten a character for the sunny map and give it a hint of its team colour: the scanned
+ * operator gear is near-black, which reads as a silhouette against the light walls. Materials are
+ * cloned per character (same shader program, different uniforms).
+ */
+export function tintCharacter(root: THREE.Object3D, team: string): void {
+  const glow = new THREE.Color(team)
+  root.traverse(o => {
+    const m = o as THREE.SkinnedMesh
+    if (!m.isSkinnedMesh || m.name === 'outline') return
+    const src = (Array.isArray(m.material) ? m.material[0] : m.material) as THREE.MeshStandardMaterial
+    if (!src.isMeshStandardMaterial) return
+    const mat = src.clone()
+    mat.color.multiplyScalar(1.45)
+    mat.emissive = glow.clone().multiplyScalar(0.045)
+    mat.emissiveIntensity = 1
+    mat.envMapIntensity = 1.2
+    m.material = mat
+  })
+}
