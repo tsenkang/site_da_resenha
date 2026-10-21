@@ -157,7 +157,7 @@ export class Bot {
     readonly color: string,
     readonly visor: string,
     physics: Physics,
-    private readonly nav: NavGrid,
+    public nav: NavGrid,
     private readonly world: CombatWorld,
     robot: RobotAsset,
     vm: VmAssets,

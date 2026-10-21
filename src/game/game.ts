@@ -4,6 +4,7 @@ import type { Input } from '../engine/input'
 import { RAPIER, Physics } from '../engine/physics'
 import type { Renderer } from '../engine/renderer'
 import { Arena, type ColliderTag } from './arena'
+import { MAP_ORIGIN, MAPS, MODE_MAP, type MapId } from './maps'
 import { Bot, type BrainContext, type ItemInfo, type Target } from './bots'
 import type { CombatWorld, DamageInfo, DamageResult, DamageSource, Hit, ProjectileKind } from './combat'
 import { BOT_ROSTER, CONFIG, setWeaponProfile, WEAPONS, type BotKind, type WeaponId } from './config'
@@ -241,7 +242,10 @@ export class Game implements CombatWorld {
   readonly scene = new THREE.Scene()
   readonly camera: THREE.PerspectiveCamera
   readonly physics: Physics
-  readonly arena: Arena
+  /** The map in play; every mode has its own (built on first use, side by side in one world). */
+  arena: Arena
+  private readonly arenas = new Map<MapId, Arena>()
+  private readonly mapItems = new Map<MapId, { props: Props; pickups: Pickups; hotspots: THREE.Vector3[] }>()
   readonly fx: Effects
   readonly player: Player
   readonly arsenal: Arsenal
@@ -251,9 +255,9 @@ export class Game implements CombatWorld {
   private readonly waveBots: Record<'scrapper' | 'juggernaut' | 'titan', Bot[]> = { scrapper: [], juggernaut: [], titan: [] }
   private readonly botById = new Map<number, Bot>()
   readonly hornets: Hound[] = []
-  readonly props: Props
-  readonly pickups: Pickups
-  private readonly tags: Map<number, ColliderTag>
+  props: Props
+  pickups: Pickups
+  private readonly tags = new Map<number, ColliderTag>()
   private rockets: Rocket[] = []
   private projectiles: Projectile[] = []
   private grenadesLive: Grenade[] = []
@@ -290,7 +294,7 @@ export class Game implements CombatWorld {
   private strafeTilt = 0
   private slideTilt = 0
   private lastLook = { x: 0, y: 0 }
-  private readonly hotspots: THREE.Vector3[]
+  private hotspots: THREE.Vector3[]
   reducedMotion = false
   fovSetting = 100
   private readonly eyePos = new THREE.Vector3()
@@ -323,7 +327,7 @@ export class Game implements CombatWorld {
     readonly renderer: Renderer,
     readonly input: Input,
     readonly audio: Audio,
-    lib: Library,
+    private readonly lib: Library,
     private readonly staged: Staged,
     gate: StageGate,
     readonly events: GameEvents,
@@ -340,11 +344,8 @@ export class Game implements CombatWorld {
     const pmrem = new THREE.PMREMGenerator(renderer.gl)
     this.scene.environment = pmrem.fromEquirectangular(lib.envHdr).texture
     pmrem.dispose()
-    this.arena = new Arena(this.scene, this.physics, lib)
-    this.arena.attachCamera(this.camera, renderer.particleDensity)
-    if (staged.sts) this.arena.attachSts(staged.sts)
-    this.tags = this.arena.tags
-    this.arena.sun.shadow.mapSize.set(renderer.shadowMapSize, renderer.shadowMapSize)
+    this.arena = this.buildArena('aurora')
+    this.arena.setActive(true)
     grenadeScan = lib.models.frag_grenade.scene
     this.fx = new Effects((x, z, y) => this.arena.groundAt(x, z, y), this.scene.fog as THREE.FogExp2, staged.fx)
     this.renderer.setHalfResSmoke(this.fx.smokeMesh)
@@ -353,7 +354,6 @@ export class Game implements CombatWorld {
     const prevReady = gate.onStageReady
     gate.onStageReady = s => {
       prevReady?.(s)
-      if (this.staged.sts) this.arena.attachSts(this.staged.sts)
       // Later enemy types arrive with their stage; build their pools as soon as the assets land.
       if (this.waveBots.scrapper.length) this.ensureStagePools()
       // Deathmatch started before the Sentinel rig landed: swap the robots in while the countdown runs.
@@ -404,9 +404,10 @@ export class Game implements CombatWorld {
       const bot = this.makeBot(i + 1, r.name, r.kind, r.color, r.visor)
       this.dmBots.push(bot)
     })
-    this.props = new Props(this.scene, this.physics, this.tags, this.arena.nav, lib, this.arena.props)
-    this.pickups = new Pickups(this.scene, lib, this.arena.pickups, launcherPickup())
-    this.hotspots = [...this.arena.hotspots, ...this.arena.spawns, ...this.arena.pickups.map(p => p.pos)]
+    const items = this.mapItemsFor(this.arena)
+    this.props = items.props
+    this.pickups = items.pickups
+    this.hotspots = items.hotspots
     // Rift shards: instanced crystals with HDR instance colours (bloom picks them up).
     const shardGeo = new THREE.OctahedronGeometry(0.11, 0)
     shardGeo.scale(0.7, 1.25, 0.7)
@@ -568,6 +569,44 @@ export class Game implements CombatWorld {
   }
 
   private prewarmTimer = 0
+
+  private buildArena(id: MapId): Arena {
+    const a = new Arena(this.scene, this.physics, this.lib, MAPS[id], MAP_ORIGIN[id], this.tags)
+    a.sun.shadow.mapSize.set(this.renderer.shadowMapSize, this.renderer.shadowMapSize)
+    this.arenas.set(id, a)
+    return a
+  }
+
+  private mapItemsFor(a: Arena): { props: Props; pickups: Pickups; hotspots: THREE.Vector3[] } {
+    let items = this.mapItems.get(a.def.id)
+    if (!items) {
+      items = {
+        props: new Props(this.scene, this.physics, this.tags, a.nav, this.lib, a.props),
+        pickups: new Pickups(this.scene, this.lib, a.pickups, launcherPickup()),
+        hotspots: [...a.hotspots, ...a.spawns, ...a.pickups.map(p => p.pos)],
+      }
+      this.mapItems.set(a.def.id, items)
+    }
+    return items
+  }
+
+  /** Switch the world to a map: show it (sky, fog, light), swap props/pickups and re-point bot navigation. */
+  useMap(id: MapId): void {
+    if (this.arena.def.id === id) return
+    this.props.setActive(false)
+    this.pickups.setActive(false)
+    this.arena.setActive(false)
+    const a = this.arenas.get(id) ?? this.buildArena(id)
+    a.setActive(true)
+    this.arena = a
+    const items = this.mapItemsFor(a)
+    this.props = items.props
+    this.pickups = items.pickups
+    this.hotspots = items.hotspots
+    for (const b of this.bots) b.nav = a.nav
+    this.attractT = 0
+    this.prewarm()
+  }
   /**
    * Compile every material in the scene, hidden ones included (three's compile walks invisible
    * objects: pooled bots and drones, inactive viewmodels, pickups, gibs), plus lazily created
@@ -831,7 +870,7 @@ export class Game implements CombatWorld {
     })
     scored.sort((a, b) => b.score - a.score)
     const pos = scored[0].s.clone()
-    return { pos, yaw: Math.atan2(pos.x, pos.z) }
+    return { pos, yaw: Math.atan2(pos.x - this.arena.origin.x, pos.z - this.arena.origin.z) }
   }
 
   /** Onslaught: spawn somewhere 14–40 m from the player, preferably out of sight. */
@@ -889,9 +928,10 @@ export class Game implements CombatWorld {
     tuning.activate('run')
     this.audio.restoreWorld()
     this.audio.setPaused(false)
-    this.clearWorld()
     this.tactical?.dispose()
     this.tactical = null
+    this.useMap(MODE_MAP[mode])
+    this.clearWorld()
     this.gameMode = mode
     const tac = mode === 'tactical'
     setWeaponProfile(tac ? 'tactical' : 'arcade')
@@ -931,6 +971,8 @@ export class Game implements CombatWorld {
       if (this.stageGate.isReady(3)) this.upgradeRocket()
       const s = this.chooseSpawn(0)
       this.player.spawn(s.pos, s.yaw)
+      // Out of attract now, so bot spawns score against the player's position too.
+      this.mode = 'countdown'
       for (const b of this.dmBots.slice(0, count)) {
         const bs = this.chooseSpawn(b.id)
         b.spawn(bs.pos, bs.yaw)
@@ -973,6 +1015,7 @@ export class Game implements CombatWorld {
     this.tactical?.dispose()
     this.tactical = null
     setWeaponProfile('arcade')
+    this.useMap('aurora')
     this.props.setActive(true)
     this.pickups.setActive(true)
     this.player.regen = true
@@ -1946,9 +1989,10 @@ export class Game implements CombatWorld {
       this.attractT += frameDt
       const a = this.attractT * 0.05
       const R = 52
-      cam.position.set(Math.cos(a) * R, 20 + Math.sin(this.attractT * 0.13) * 3, Math.sin(a) * R)
+      const o = this.arena.origin
+      cam.position.set(o.x + Math.cos(a) * R, 20 + Math.sin(this.attractT * 0.13) * 3, o.z + Math.sin(a) * R)
       cam.up.set(0, 1, 0)
-      cam.lookAt(0, 1.5, 0)
+      cam.lookAt(o.x, 1.5, o.z)
       this.fov(62)
     } else if (this.player.alive) {
       const eye = this.player.eye(alpha, this.eyePos)
@@ -2149,11 +2193,12 @@ export class Game implements CombatWorld {
   }
 
   setQuality(): void {
-    this.arena.sun.shadow.map?.dispose()
-    this.arena.sun.shadow.map = null
-    this.arena.sun.shadow.mapSize.set(this.renderer.shadowMapSize, this.renderer.shadowMapSize)
+    for (const a of this.arenas.values()) {
+      a.sun.shadow.map?.dispose()
+      a.sun.shadow.map = null
+      a.sun.shadow.mapSize.set(this.renderer.shadowMapSize, this.renderer.shadowMapSize)
+    }
     this.fx.density = this.renderer.particleDensity
-    this.arena.setRainDensity(this.renderer.particleDensity)
   }
 }
 

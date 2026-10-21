@@ -9,6 +9,8 @@ Feito com Three.js (gráficos) e Rapier (física).
 - **Mata-mata** e **Sobrevivência** (8 ondas e um chefe) continuam disponíveis.
 - **Mapa "Base Aurora"**: dois locais de spike (A e B), meio, corredores e barreiras de spawn
   na fase de compra.
+- **Um mapa por modo**: Tático na Base Aurora (dia), Mata-mata no Mercado (pôr do sol, praça
+  compacta) e Sobrevivência na Fortaleza (noite, pátio com janelas e postes acesos).
 - **Base do online pronta**: protocolo, salas de 2v2 a 5v5 e servidor com autoridade. Veja
   [docs/ONLINE.md](docs/ONLINE.md).
 
@@ -62,7 +64,8 @@ use `CHROMIUM_PATH=/caminho/do/chromium pnpm smoke`.
 | --- | --- |
 | `src/game/tactical.ts` | regras do modo tático (rodadas, economia, loja, spike), código puro e testado |
 | `src/game/tacticalMatch.ts` | diretor da partida: times, bots com objetivos, plantar/desarmar, fumaça, espectador |
-| `src/game/arena.ts` | o mapa Base Aurora (geometria, colisões, navegação dos bots, locais A/B) |
+| `src/game/maps.ts` | definição dos mapas (layout, spawns, itens, céu e paleta) e qual modo usa qual |
+| `src/game/arena.ts` | constrói um mapa (geometria, colisões, navegação dos bots, locais A/B) |
 | `src/game/bots.ts` | IA dos bots (times, objetivos, combate) |
 | `src/game/config.ts` | armas (perfil arcade e perfil tático) e ajustes gerais |
 | `src/ui/tacticalHud.ts` | HUD tático: placar, minimapa, loja, placar do Tab |

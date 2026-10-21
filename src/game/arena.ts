@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { RAPIER, type Physics } from '../engine/physics'
 import { worldBox, type Library } from './library'
 import { BLOCKED, NavGrid } from './nav'
+import { MAPS, type MapDef } from './maps'
 
 /**
  * "Base Aurora": a sunny two-site tactical map in a painted, low-poly Mediterranean style.
@@ -27,11 +28,10 @@ export type ColliderTag =
   | { kind: 'player' }
   | { kind: 'prop'; index: number }
 
-/** Layout scale: 1 = the original compact map; 1.3 gives longer lanes and bigger plazas. */
-export const MAP_SCALE = 1.3
-const K = MAP_SCALE
-export const HALF_X = Math.round(46 * K)
-export const HALF_Z = Math.round(50 * K)
+/** Tactical map scale and extents (the HUD minimap and the round director use them). */
+export const MAP_SCALE = MAPS.aurora.scale
+export const HALF_X = Math.round(MAPS.aurora.halfX * MAP_SCALE)
+export const HALF_Z = Math.round(MAPS.aurora.halfZ * MAP_SCALE)
 
 export type PropSpot = { pos: THREE.Vector3; model: 'barrel' | 'propane'; rot: number }
 export type PickupSpot = { pos: THREE.Vector3; kind: 'health' | 'armor' | 'ammo' | 'rocket' }
@@ -42,51 +42,9 @@ export type Site = { id: SiteId; center: THREE.Vector3; halfX: number; halfZ: nu
 export type MapRect = { x0: number; x1: number; z0: number; z1: number; kind: 'building' | 'cover' | 'wall' }
 export type TeamSide = 'attack' | 'defend'
 
-/** Building blocks [x0, x1, z0, z1, height, style] in design units. Lanes are the gaps between them. */
-const BUILDINGS: [number, number, number, number, number, number][] = [
-  [-46, -38, -4, 20, 8, 0], // A main, west row
-  [-30, -8, -6, 24, 9, 1], // west block (between A main and Mid)
-  [8, 30, -6, 24, 9, 2], // east block (between Mid and B main)
-  [38, 46, -4, 20, 8, 0], // B main, east row
-  [-16, -3, -36, -14, 7.5, 2], // north-west block (A link / Market)
-  [3, 16, -36, -14, 7.5, 1], // north-east block (Market / B link)
-]
-
-/** Cover: [x, z, w, d, h, kind] — kind 0 crate, 1 stone planter / low wall, 2 metal generator, 3 fountain. Positions in design units, sizes in metres. */
-const COVER: [number, number, number, number, number, number][] = [
-  // Site A
-  [-31, -24, 3.2, 3.2, 2.2, 2], [-38, -16, 2, 2, 1.6, 0], [-38, -14, 2, 2, 1.6, 0], [-38, -15, 2, 2, 3.2, 0],
-  [-24, -31, 2, 2, 1.6, 0], [-22, -31, 2, 2, 1.6, 0], [-41, -30, 1.2, 6, 1.1, 1], [-22, -18, 4, 1.2, 1.1, 1],
-  // Site B
-  [31, -24, 3.2, 3.2, 2.2, 2], [38, -16, 2, 2, 1.6, 0], [38, -14, 2, 2, 1.6, 0], [38, -15, 2, 2, 3.2, 0],
-  [24, -31, 2, 2, 1.6, 0], [22, -31, 2, 2, 1.6, 0], [41, -30, 1.2, 6, 1.1, 1], [22, -18, 4, 1.2, 1.1, 1],
-  // Mid
-  [0, 7, 5.5, 5.5, 1.1, 3], [-4, -10, 2, 2, 1.6, 0], [4, -10, 2, 2, 1.6, 0], [0, 18, 2, 2, 1.6, 0], [1.6, 19.2, 1.4, 1.4, 1.1, 0],
-  // Mains and lobbies
-  [-34, 6, 2, 2, 1.6, 0], [-35.5, 7.5, 1.4, 1.4, 1.1, 0], [34, 6, 2, 2, 1.6, 0], [35.5, 7.5, 1.4, 1.4, 1.1, 0],
-  [-26, 30, 5, 1.2, 1.1, 1], [26, 30, 5, 1.2, 1.1, 1], [-40, 28, 2, 2, 1.6, 0], [40, 28, 2, 2, 1.6, 0],
-  // Defender back lane
-  [-26, -43, 2, 2, 1.6, 0], [26, -43, 2, 2, 1.6, 0], [0, -42, 6, 1.2, 1.1, 1],
-]
-
-/** Trees [x, z, size] in design units; kept out of lanes and chokes. */
-const TREES: [number, number, number][] = [
-  [-43, -45, 1.1], [-34, -46, 0.9], [43, -45, 1.1], [34, -46, 0.9], [-21, -44, 0.8], [21, -44, 0.8],
-  [-44, -9, 1], [44, -9, 1], [-19, -27, 0.9], [19, -27, 0.9],
-  [-43, 26, 1.1], [43, 26, 1.1], [-20, 46, 1], [20, 46, 1], [-33, 45, 0.9], [33, 45, 0.9],
-  [-5, 27, 0.75], [5, 27, 0.75],
-]
-/** Street lamps [x, z] in design units. */
-const LAMPS: [number, number][] = [[-37, 12], [37, 12], [-37, -2], [37, -2], [-7, 14], [7, 2], [-2.5, -30], [2.5, -20], [-14, 36], [14, 36], [-30, -38], [30, -38]]
-
+/** Materials shared by every map (per-map colours come from MapDef.look). */
 const PALETTE = {
-  floor: '#e2d6c0',
-  street: '#cfc2aa',
   plaza: '#d9cdb5',
-  grass: '#9cb86a',
-  stucco: ['#f2e6cf', '#ecd2ad', '#dfe7e2'],
-  trim: ['#c45f3f', '#2f978f', '#4a6f9e'],
-  roof: ['#c2593b', '#3a8d86', '#55698a'],
   base: '#b09b7f',
   window: '#2c4357',
   frame: '#fbf6ec',
@@ -94,8 +52,6 @@ const PALETTE = {
   stone: '#cdbfa6',
   metal: '#7f8e98',
   perimeter: '#dccbaa',
-  mountain: '#93abbd',
-  mountainFar: '#b6c7d4',
   trunk: '#7a5636',
   leaf: ['#6f9a45', '#8db352'],
   water: '#5fb6c9',
@@ -105,8 +61,15 @@ const PALETTE = {
 
 export class Arena {
   readonly group = new THREE.Group()
-  readonly tags = new Map<number, ColliderTag>()
   readonly nav: NavGrid
+  /** Layout scale and half extents in metres. */
+  readonly K: number
+  readonly HX: number
+  readonly HZ: number
+  /** World offset of this map (maps sit side by side in one physics world). */
+  readonly origin: THREE.Vector3
+  private readonly hemi: THREE.HemisphereLight
+  private readonly skyTex: THREE.Texture
   sun!: THREE.DirectionalLight
   /** Free-for-all spawns (Deathmatch / Onslaught). */
   readonly spawns: THREE.Vector3[] = []
@@ -129,28 +92,48 @@ export class Arena {
   private time = 0
   private seed = 4242
 
-  constructor(readonly scene: THREE.Scene, private readonly physics: Physics, private readonly lib: Library) {
+  constructor(
+    readonly scene: THREE.Scene,
+    private readonly physics: Physics,
+    private readonly lib: Library,
+    readonly def: MapDef,
+    origin: [number, number],
+    readonly tags: Map<number, ColliderTag>,
+  ) {
     void this.lib
+    this.K = def.scale
+    this.HX = Math.round(def.halfX * def.scale)
+    this.HZ = Math.round(def.halfZ * def.scale)
+    this.origin = new THREE.Vector3(origin[0], 0, origin[1])
+    this.group.position.copy(this.origin)
+    const L = def.look
+    this.skyTex = skyTexture(L.sky)
+    this.hemi = new THREE.HemisphereLight(L.hemiSky, L.hemiGround, L.hemiIntensity)
     const lam = (key: string, color: string, map?: THREE.Texture, ao = 0.3) => {
       const m = new THREE.MeshLambertMaterial({ color, map: map ?? null })
       if (ao > 0) groundShade(m, ao)
       return (this.mats[key] = m)
     }
     const stucco = stuccoTexture()
-    lam('floor', PALETTE.floor, tileTexture(), 0)
-    lam('street', PALETTE.street, tileTexture(true), 0)
+    lam('floor', L.floor, tileTexture(), 0)
+    lam('street', L.street, tileTexture(true), 0)
     lam('plaza', PALETTE.plaza, plazaTexture(), 0)
-    lam('grass', PALETTE.grass, grassTexture(), 0)
-    PALETTE.stucco.forEach((c, i) => lam(`stucco${i}`, c, stucco))
-    PALETTE.trim.forEach((c, i) => lam(`trim${i}`, c))
+    lam('grass', L.grass, grassTexture(), 0)
+    L.stucco.forEach((c, i) => lam(`stucco${i}`, c, stucco))
+    L.trim.forEach((c, i) => lam(`trim${i}`, c))
     const tiles = roofTexture()
-    PALETTE.roof.forEach((c, i) => lam(`roof${i}`, c, tiles, 0))
-    PALETTE.trim.forEach((c, i) => {
+    L.roof.forEach((c, i) => lam(`roof${i}`, c, tiles, 0))
+    L.trim.forEach((c, i) => {
       const m = lam(`awning${i}`, '#ffffff', awningTexture(c), 0)
       m.side = THREE.DoubleSide
     })
     lam('base', PALETTE.base, stucco)
-    lam('window', PALETTE.window, windowTexture(), 0)
+    const win = lam('window', PALETTE.window, windowTexture(), 0) as THREE.MeshLambertMaterial
+    if (L.night) {
+      // Lit rooms at night: warm emissive panes.
+      win.emissive.set('#ffc879')
+      win.emissiveIntensity = 0.75
+    }
     lam('frame', PALETTE.frame)
     lam('crate', PALETTE.crate, crateTexture())
     lam('stone', PALETTE.stone, stucco)
@@ -163,31 +146,56 @@ export class Arena {
     })
     PALETTE.bloom.forEach((c, i) => lam(`bloom${i}`, c, undefined, 0))
     this.mats.water = new THREE.MeshLambertMaterial({ color: PALETTE.water, emissive: '#1d5e6e', emissiveIntensity: 0.35 })
-    this.mats.lampGlow = new THREE.MeshBasicMaterial({ color: '#fff1c8' })
+    this.mats.lampGlow = new THREE.MeshBasicMaterial({ color: L.night ? '#ffe2a0' : '#fff1c8' })
+    this.mats.lampPool = new THREE.MeshBasicMaterial({ map: poolTexture(), color: '#ffb768', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.55, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 })
     PALETTE.backdrop.forEach((c, i) => (this.mats[`far${i}`] = new THREE.MeshLambertMaterial({ color: c })))
     this.mats.farRoof = new THREE.MeshLambertMaterial({ color: '#c27053' })
     this.mats.cypress = new THREE.MeshLambertMaterial({ color: '#4f7a3f', flatShading: true })
     this.mats.paint = new THREE.MeshBasicMaterial({ map: sitePaintTexture(), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
-    for (const k of ['window', 'frame', 'paint', 'lampGlow', 'water', 'far0', 'far1', 'far2', 'far3', 'farRoof', 'cypress', 'grass', 'bloom0', 'bloom1', 'bloom2', 'bloom3']) this.noShadow.add(k)
+    for (const k of ['lampPool', 'window', 'frame', 'paint', 'lampGlow', 'water', 'far0', 'far1', 'far2', 'far3', 'farRoof', 'cypress', 'grass', 'bloom0', 'bloom1', 'bloom2', 'bloom3']) this.noShadow.add(k)
     this.barrierMat = new THREE.MeshBasicMaterial({ map: barrierTexture(), color: new THREE.Color(0.35, 1.6, 1.4), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
     this.buildSky()
     this.buildLighting()
     this.buildGround()
     this.buildPerimeter()
-    BUILDINGS.forEach(([x0, x1, z0, z1, h, style], i) => this.building(x0 * K, x1 * K, z0 * K, z1 * K, h, style, i))
-    for (const [x, z, w, d, h, kind] of COVER) this.cover(x * K, z * K, w, d, h, kind)
-    for (const [x, z, s] of TREES) this.tree(x * K, z * K, s)
-    for (const [x, z] of LAMPS) this.lamp(x * K, z * K)
-    this.buildSites()
+    def.buildings.forEach(([x0, x1, z0, z1, h, style], i) => this.building(x0 * this.K, x1 * this.K, z0 * this.K, z1 * this.K, h, style, i))
+    for (const [x, z, w, d, h, kind] of def.cover) this.cover(x * this.K, z * this.K, w, d, h, kind)
+    for (const [x, z, s] of def.trees) this.tree(x * this.K, z * this.K, s)
+    for (const [x, z] of def.lamps) this.lamp(x * this.K, z * this.K)
+    if (def.sites) this.buildSites()
     this.buildBackdrop()
     this.flush()
     this.physics.world.step()
     this.nav = this.bakeNav()
     // Spawn barriers go in after the nav bake: they are temporary and must not carve the grid.
-    this.barrier('attack', 34.5 * K)
-    this.barrier('defend', -37.5 * K)
+    if (def.barriers) {
+      this.barrier('attack', def.barriers[0] * this.K)
+      this.barrier('defend', def.barriers[1] * this.K)
+    }
     this.defineSpots()
     this.scene.add(this.group)
+    this.setActive(false)
+  }
+
+  /** Show this map and apply its sky, fog and light (only the active map is visible). */
+  setActive(on: boolean): void {
+    this.group.visible = on
+    this.sun.visible = on
+    this.hemi.visible = on
+    if (!on) return
+    const L = this.def.look
+    this.scene.background = this.skyTex
+    this.scene.environmentIntensity = L.night ? 0.4 : 0.9
+    const fog = this.scene.fog as THREE.FogExp2 | null
+    if (fog) {
+      fog.color.set(L.fog)
+      fog.density = L.fogDensity
+    } else this.scene.fog = new THREE.FogExp2(L.fog, L.fogDensity)
+  }
+
+  /** Map centre in world space. */
+  get center(): THREE.Vector3 {
+    return this.origin
   }
 
   private rand(): number {
@@ -229,7 +237,7 @@ export class Arena {
   }
 
   private collider(cx: number, cy: number, cz: number, w: number, h: number, d: number, surface: Surface): RAPIER.Collider {
-    const c = this.physics.addStaticBox(new THREE.Vector3(cx, cy, cz), new THREE.Vector3(w, h, d))
+    const c = this.physics.addStaticBox(new THREE.Vector3(cx + this.origin.x, cy, cz + this.origin.z), new THREE.Vector3(w, h, d))
     this.tags.set(c.handle, { kind: 'world', surface })
     return c
   }
@@ -244,11 +252,7 @@ export class Arena {
 
   // ─── sky, light, ground ────────────────────────────────────────────────
   private buildSky(): void {
-    const scene = this.scene
-    scene.background = skyTexture()
-    scene.backgroundIntensity = 1
-    scene.environmentIntensity = 0.9
-    scene.fog = new THREE.FogExp2('#d4e1ea', 0.0034)
+    const L = this.def.look
     // Two low-poly ridge rings (near and far) for depth on the horizon.
     const ridge = (R: number, base: number, amp: number, color: string, seed: number) => {
       const segs = 120
@@ -268,11 +272,11 @@ export class Arena {
       m.matrixAutoUpdate = false
       this.group.add(m)
     }
-    ridge(330, 34, 16, PALETTE.mountainFar, 3)
-    ridge(250, 16, 9, PALETTE.mountain, 7)
-    // Sun disc and soft halo where the light comes from.
-    const sunDir = new THREE.Vector3(-0.45, 0.82, 0.38).normalize()
-    const halo = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), new THREE.MeshBasicMaterial({ map: glowTexture(), transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, color: '#fff2d6' }))
+    ridge(330, 34, 16, L.ridge[1], 3 + this.def.id.length)
+    ridge(250, 16, 9, L.ridge[0], 7 + this.def.id.length)
+    // Sun (or moon) disc and soft halo where the light comes from.
+    const sunDir = new THREE.Vector3(...L.sunDir).normalize()
+    const halo = new THREE.Mesh(new THREE.PlaneGeometry(L.night ? 50 : 90, L.night ? 50 : 90), new THREE.MeshBasicMaterial({ map: glowTexture(), transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending, color: L.sunGlow }))
     halo.position.copy(sunDir).multiplyScalar(380)
     halo.lookAt(0, 0, 0)
     this.group.add(halo)
@@ -294,16 +298,17 @@ export class Arena {
         puffs.push(g)
       }
     }
-    const cloud = new THREE.Mesh(mergeGeometries(puffs, false)!, new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: '#c9d6e2', emissiveIntensity: 0.55, fog: false, flatShading: true }))
+    const cloud = new THREE.Mesh(mergeGeometries(puffs, false)!, new THREE.MeshLambertMaterial({ color: L.cloud, emissive: L.cloudGlow, emissiveIntensity: 0.55, fog: false, flatShading: true }))
     this.clouds.add(cloud)
     this.group.add(this.clouds)
   }
 
   private buildLighting(): void {
-    const sunDir = new THREE.Vector3(-0.45, 0.82, 0.38).normalize()
-    const sun = new THREE.DirectionalLight('#fff0d6', 2.3)
-    sun.position.copy(sunDir).multiplyScalar(110)
-    sun.target.position.set(0, 0, 0)
+    const L = this.def.look
+    const sunDir = new THREE.Vector3(...L.sunDir).normalize()
+    const sun = new THREE.DirectionalLight(L.sunColor, L.sunIntensity)
+    sun.position.copy(sunDir).multiplyScalar(110).add(this.origin)
+    sun.target.position.copy(this.origin)
     sun.castShadow = true
     const cam = sun.shadow.camera
     cam.left = cam.bottom = -82
@@ -315,27 +320,25 @@ export class Arena {
     sun.shadow.mapSize.set(1024, 1024)
     this.sun = sun
     this.scene.add(sun, sun.target)
-    this.scene.add(new THREE.HemisphereLight('#dcebff', '#c2a582', 1.25))
+    this.scene.add(this.hemi)
   }
 
   private buildGround(): void {
-    this.flat('floor', -HALF_X, HALF_X, -HALF_Z, HALF_Z, 0, 4)
+    this.flat('floor', -this.HX, this.HX, -this.HZ, this.HZ, 0, 4)
     // Paved streets through the lanes, plazas on the sites and in Mid.
-    this.flat('street', -38 * K, -30 * K, -4 * K, 24 * K, 0.005, 2)
-    this.flat('street', 30 * K, 38 * K, -4 * K, 24 * K, 0.005, 2)
-    this.flat('street', -8 * K, 8 * K, -6 * K, 28 * K, 0.005, 2)
-    this.flat('street', -3 * K, 3 * K, -36 * K, -6 * K, 0.005, 2)
-    for (const sx of [-1, 1]) this.flat('plaza', sx * 18 * K - (sx < 0 ? 26 * K : 0), sx * 18 * K + (sx > 0 ? 26 * K : 0), -36 * K, -8 * K, 0.004, 6)
+    const K = this.K
+    for (const [x0, x1, z0, z1] of this.def.streets) this.flat('street', x0 * K, x1 * K, z0 * K, z1 * K, 0.005, 2)
+    for (const [x0, x1, z0, z1] of this.def.plazas) this.flat('plaza', x0 * K, x1 * K, z0 * K, z1 * K, 0.004, 6)
     // Grass verges along the back walls.
-    this.flat('grass', -HALF_X + 1, HALF_X - 1, -HALF_Z + 1, -HALF_Z + 5, 0.008, 5)
-    this.flat('grass', -HALF_X + 1, HALF_X - 1, HALF_Z - 5, HALF_Z - 1, 0.008, 5)
+    this.flat('grass', -this.HX + 1, this.HX - 1, -this.HZ + 1, -this.HZ + 5, 0.008, 5)
+    this.flat('grass', -this.HX + 1, this.HX - 1, this.HZ - 5, this.HZ - 1, 0.008, 5)
     // Outside the walls: a plain under the ridge so the horizon never shows a void.
-    for (const [x0, x1, z0, z1] of [[-400, 400, -400, -HALF_Z], [-400, 400, HALF_Z, 400], [-400, -HALF_X, -HALF_Z, HALF_Z], [HALF_X, 400, -HALF_Z, HALF_Z]]) {
+    for (const [x0, x1, z0, z1] of [[-400, 400, -400, -this.HZ], [-400, 400, this.HZ, 400], [-400, -this.HX, -this.HZ, this.HZ], [this.HX, 400, -this.HZ, this.HZ]]) {
       const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0)
       g.rotateX(-Math.PI / 2)
       this.queue('grass', g, new THREE.Matrix4().makeTranslation((x0 + x1) / 2, -0.05, (z0 + z1) / 2))
     }
-    this.collider(0, -0.5, 0, HALF_X * 2 + 6, 1, HALF_Z * 2 + 6, 'concrete')
+    this.collider(0, -0.5, 0, this.HX * 2 + 6, 1, this.HZ * 2 + 6, 'concrete')
   }
 
   /** Town wall: stucco with pilasters, a cap and a terracotta coping. */
@@ -355,15 +358,15 @@ export class Arena {
         this.box('stone', px, 0, pz, alongX ? 0.9 : 0.5, h + 0.2, alongX ? 0.5 : 0.9, { collide: false, tile: 2 })
       }
     }
-    wall(0, -HALF_Z - t / 2 + 1, HALF_X * 2 + 2 * t, t)
-    wall(0, HALF_Z + t / 2 - 1, HALF_X * 2 + 2 * t, t)
-    wall(-HALF_X - t / 2 + 1, 0, t, HALF_Z * 2)
-    wall(HALF_X + t / 2 - 1, 0, t, HALF_Z * 2)
+    wall(0, -this.HZ - t / 2 + 1, this.HX * 2 + 2 * t, t)
+    wall(0, this.HZ + t / 2 - 1, this.HX * 2 + 2 * t, t)
+    wall(-this.HX - t / 2 + 1, 0, t, this.HZ * 2)
+    wall(this.HX + t / 2 - 1, 0, t, this.HZ * 2)
     this.minimap.push(
-      { x0: -HALF_X - 1, x1: HALF_X + 1, z0: -HALF_Z - 1, z1: -HALF_Z + 1, kind: 'wall' },
-      { x0: -HALF_X - 1, x1: HALF_X + 1, z0: HALF_Z - 1, z1: HALF_Z + 1, kind: 'wall' },
-      { x0: -HALF_X - 1, x1: -HALF_X + 1, z0: -HALF_Z, z1: HALF_Z, kind: 'wall' },
-      { x0: HALF_X - 1, x1: HALF_X + 1, z0: -HALF_Z, z1: HALF_Z, kind: 'wall' },
+      { x0: -this.HX - 1, x1: this.HX + 1, z0: -this.HZ - 1, z1: -this.HZ + 1, kind: 'wall' },
+      { x0: -this.HX - 1, x1: this.HX + 1, z0: this.HZ - 1, z1: this.HZ + 1, kind: 'wall' },
+      { x0: -this.HX - 1, x1: -this.HX + 1, z0: -this.HZ, z1: this.HZ, kind: 'wall' },
+      { x0: this.HX - 1, x1: this.HX + 1, z0: -this.HZ, z1: this.HZ, kind: 'wall' },
     )
   }
 
@@ -391,7 +394,7 @@ export class Arena {
       { along: 'z', at: x1, from: z0, to: z1, normal: 1 },
     ]
     for (const f of faces) {
-      if ((f.along === 'z' && Math.abs(Math.abs(f.at) - HALF_X) < 1) || (f.along === 'x' && Math.abs(Math.abs(f.at) - HALF_Z) < 1)) continue
+      if ((f.along === 'z' && Math.abs(Math.abs(f.at) - this.HX) < 1) || (f.along === 'x' && Math.abs(Math.abs(f.at) - this.HZ) < 1)) continue
       const len = f.to - f.from
       const n = Math.max(1, Math.floor(len / 4.4))
       const step = len / n
@@ -497,12 +500,17 @@ export class Arena {
     this.box('metal', x, 4.2, z, 0.5, 0.12, 0.5, { collide: false, tile: 1 })
     this.box('lampGlow', x, 3.75, z, 0.32, 0.45, 0.32, { collide: false, tile: 1 })
     this.box('metal', x, 0, z, 0.36, 0.5, 0.36, { collide: false, tile: 1 })
+    if (this.def.look.night) {
+      const g = new THREE.PlaneGeometry(9, 9)
+      g.rotateX(-Math.PI / 2)
+      this.queue('lampPool', g, new THREE.Matrix4().makeTranslation(x, 0.03, z))
+    }
   }
 
   private buildSites(): void {
-    const defs: [SiteId, number, number, string][] = [['A', -31 * K, -24 * K, '#ff6b5a'], ['B', 31 * K, -24 * K, '#ffb648']]
+    const defs: [SiteId, number, number, string][] = [['A', -31 * this.K, -24 * this.K, '#ff6b5a'], ['B', 31 * this.K, -24 * this.K, '#ffb648']]
     for (const [id, x, z, color] of defs) {
-      const site: Site = { id, center: new THREE.Vector3(x, 0, z), halfX: 9.5 * K * 0.95, halfZ: 8.5 * K * 0.95, color }
+      const site: Site = { id, center: new THREE.Vector3(x, 0, z).add(this.origin), halfX: 9.5 * this.K * 0.95, halfZ: 8.5 * this.K * 0.95, color }
       this.sites.push(site)
       const m = new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition(x, 0.02, z)
       const g = new THREE.PlaneGeometry(site.halfX * 2, site.halfZ * 2)
@@ -510,11 +518,11 @@ export class Arena {
       for (let i = 0; i < uv.count; i += 1) uv.setX(i, uv.getX(i) * 0.5 + (id === 'A' ? 0 : 0.5))
       this.queue('paint', g, m)
       // Big site letter on the building wall facing the plaza.
-      const wallX = (id === 'A' ? -16 : 16) * K
+      const wallX = (id === 'A' ? -16 : 16) * this.K
       const sign = new THREE.PlaneGeometry(4, 4)
       const suv = sign.getAttribute('uv') as THREE.BufferAttribute
       for (let i = 0; i < suv.count; i += 1) suv.setX(i, suv.getX(i) * 0.5 + (id === 'A' ? 0 : 0.5))
-      const sm = new THREE.Matrix4().compose(new THREE.Vector3(wallX + (id === 'A' ? -0.1 : 0.1), 4.4, -25 * K), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), id === 'A' ? -Math.PI / 2 : Math.PI / 2), new THREE.Vector3(1, 1, 1))
+      const sm = new THREE.Matrix4().compose(new THREE.Vector3(wallX + (id === 'A' ? -0.1 : 0.1), 4.4, -25 * this.K), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), id === 'A' ? -Math.PI / 2 : Math.PI / 2), new THREE.Vector3(1, 1, 1))
       this.queue('paint', sign, sm)
     }
   }
@@ -528,7 +536,7 @@ export class Arena {
       const r = 95 + rnd() * 70
       const x = Math.cos(a) * r * 1.05
       const z = Math.sin(a) * r
-      if (Math.abs(x) < HALF_X + 8 && Math.abs(z) < HALF_Z + 8) continue
+      if (Math.abs(x) < this.HX + 8 && Math.abs(z) < this.HZ + 8) continue
       const w = 6 + rnd() * 10
       const d = 6 + rnd() * 10
       const h = 6 + rnd() * 12
@@ -545,7 +553,7 @@ export class Arena {
       const r = 72 + rnd() * 50
       const x = Math.cos(a) * r * 1.05
       const z = Math.sin(a) * r
-      if (Math.abs(x) < HALF_X + 4 && Math.abs(z) < HALF_Z + 4) continue
+      if (Math.abs(x) < this.HX + 4 && Math.abs(z) < this.HZ + 4) continue
       const h = 9 + rnd() * 7
       const g = new THREE.ConeGeometry(1.4 + rnd() * 0.6, h, 6)
       this.queue('cypress', g, new THREE.Matrix4().makeTranslation(x, h / 2, z))
@@ -554,7 +562,7 @@ export class Arena {
 
   // ─── spawn barriers (buy phase) ────────────────────────────────────────
   private barrier(side: TeamSide, z: number): void {
-    const w = HALF_X * 2
+    const w = this.HX * 2
     const h = 6
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), this.barrierMat)
     const uv = mesh.geometry.getAttribute('uv') as THREE.BufferAttribute
@@ -583,7 +591,9 @@ export class Arena {
 
   // ─── navigation ────────────────────────────────────────────────────────
   private bakeNav(): NavGrid {
-    const nav = new NavGrid(HALF_X * 2, HALF_Z * 2, 1, -HALF_X, -HALF_Z)
+    const ox = this.origin.x
+    const oz = this.origin.z
+    const nav = new NavGrid(this.HX * 2, this.HZ * 2, 1, -this.HX + ox, -this.HZ + oz)
     const world = this.physics.world
     const ray = new RAPIER.Ray({ x: 0, y: 4.5, z: 0 }, { x: 0, y: -1, z: 0 })
     const sample = (x: number, z: number): { h: number; ny: number } => {
@@ -595,13 +605,13 @@ export class Arena {
     const r = 0.5
     for (let cz = 0; cz < nav.rows; cz += 1) {
       for (let cx = 0; cx < nav.cols; cx += 1) {
-        const x = -HALF_X + cx + 0.5
-        const z = -HALF_Z + cz + 0.5
-        const c = sample(x, z)
-        let ok = c.h !== BLOCKED && c.h < 0.5 && c.ny > 0.8 && Math.abs(x) < HALF_X - 1.2 && Math.abs(z) < HALF_Z - 1.2
+        const x = -this.HX + cx + 0.5
+        const z = -this.HZ + cz + 0.5
+        const c = sample(x + ox, z + oz)
+        let ok = c.h !== BLOCKED && c.h < 0.5 && c.ny > 0.8 && Math.abs(x) < this.HX - 1.2 && Math.abs(z) < this.HZ - 1.2
         if (ok) {
           for (const [dx, dz] of [[r, 0], [-r, 0], [0, r], [0, -r], [r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]]) {
-            const s = sample(x + dx, z + dz)
+            const s = sample(x + ox + dx, z + oz + dz)
             if (Math.abs(s.h - c.h) > 0.3) {
               ok = false
               break
@@ -615,55 +625,35 @@ export class Arena {
     return nav
   }
 
+  /** Nearest walkable cell to a map-local point, in world space. */
   private snap(x: number, z: number): THREE.Vector3 {
-    const i = this.nav.nearest(x, z, 6)
-    const c = i >= 0 ? this.nav.center(i) : { x, z }
+    const wx = x + this.origin.x
+    const wz = z + this.origin.z
+    const i = this.nav.nearest(wx, wz, 6)
+    const c = i >= 0 ? this.nav.center(i) : { x: wx, z: wz }
     return new THREE.Vector3(c.x, i >= 0 ? this.nav.heights[i] : 0, c.z)
   }
 
   private defineSpots(): void {
-    const v = (x: number, y: number, z: number) => new THREE.Vector3(x * K, y, z * K)
-    const ffa: [number, number][] = [
-      [-41, -44], [41, -44], [-34, 10], [34, 10], [-41, -22], [41, -22], [0, -44], [0, 44],
-      [-36, 42], [36, 42], [0, 12], [-20, -10], [20, -10], [-30, 30], [30, 30], [0, -26],
-    ]
-    for (const [x, z] of ffa) this.spawns.push(this.snap(x * K, z * K))
+    const d = this.def
+    const K = this.K
+    const v = (x: number, z: number) => new THREE.Vector3(x * K + this.origin.x, 0, z * K + this.origin.z)
+    for (const [x, z] of d.ffaSpawns) this.spawns.push(this.snap(x * K, z * K))
     for (let i = 0; i < 5; i += 1) {
       const x = (i - 2) * 3.2
-      this.teamSpawns.attack.push(this.snap(x, 44 * K + (i % 2) * 2))
-      this.teamSpawns.defend.push(this.snap(x, -45 * K - (i % 2) * 2))
+      const zs = Math.sign(d.teamSpawnZ[0])
+      this.teamSpawns.attack.push(this.snap(x, d.teamSpawnZ[0] * K + zs * (i % 2) * 2))
+      this.teamSpawns.defend.push(this.snap(x, d.teamSpawnZ[1] * K - zs * (i % 2) * 2))
     }
-    const hot: [number, number][] = [[-31, -20], [31, -20], [0, 0], [0, -24], [-34, 10], [34, 10], [-12, -10], [12, -10], [-30, 32], [30, 32], [0, 30], [-30, -44], [30, -44]]
-    for (const [x, z] of hot) this.hotspots.push(this.snap(x * K, z * K))
-    const barrels: [number, number, PropSpot['model']][] = [
-      [-36.5, 15, 'barrel'], [36.5, 15, 'barrel'], [-6.2, 16, 'propane'], [6.2, -12, 'barrel'], [-43, -36, 'barrel'], [43, -36, 'propane'],
-    ]
-    for (const [x, z, model] of barrels) this.props.push({ pos: v(x, 0, z), model, rot: (x * 7.1 + z) % (Math.PI * 2) })
-    const pick: [number, number, number, PickupSpot['kind']][] = [
-      [-34, 0, 12, 'health'], [34, 0, 12, 'health'], [0, 0, -30, 'health'], [0, 0, 32, 'health'],
-      [-30, 0, -40, 'armor'], [30, 0, -40, 'armor'],
-      [-20, 0, 32, 'ammo'], [20, 0, 32, 'ammo'], [-12, 0, -44, 'ammo'], [12, 0, -44, 'ammo'],
-      [0, 0, -2, 'rocket'],
-    ]
-    for (const [x, y, z, kind] of pick) this.pickups.push({ pos: v(x, y, z), kind })
+    for (const [x, z] of d.hotspots) this.hotspots.push(this.snap(x * K, z * K))
+    for (const [x, z, model] of d.barrels) this.props.push({ pos: v(x, z), model, rot: (x * 7.1 + z) % (Math.PI * 2) })
+    for (const [x, z, kind] of d.pickups) this.pickups.push({ pos: v(x, z), kind })
   }
 
   /** Ground height below a point (used by FX pieces). */
   groundAt(x: number, z: number, fromY: number): number {
     const hit = this.physics.world.castRay(new RAPIER.Ray({ x, y: fromY, z }, { x: 0, y: -1, z: 0 }), 12, true, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS, undefined, undefined, undefined, c => this.tags.get(c.handle)?.kind === 'world')
     return hit ? fromY - hit.timeOfImpact : 0
-  }
-
-  // Old-yard hooks (no crane skyline or rain on this map).
-  attachSts(scene: THREE.Object3D): void {
-    void scene
-  }
-  attachCamera(camera: THREE.Camera, density: number): void {
-    void camera
-    void density
-  }
-  setRainDensity(density: number): void {
-    void density
   }
 
   update(time: number): void {
@@ -960,23 +950,32 @@ function glowTexture(): THREE.CanvasTexture {
   return t
 }
 
-/** Vertical sky gradient mapped equirectangularly (deep zenith blue → warm haze at the horizon). */
-function skyTexture(): THREE.CanvasTexture {
+/** Vertical sky gradient mapped equirectangularly (zenith → horizon haze → ground). */
+function skyTexture(stops: [number, string][]): THREE.CanvasTexture {
   const c = document.createElement('canvas')
   c.width = 4
   c.height = 256
   const g = c.getContext('2d')!
   const grad = g.createLinearGradient(0, 0, 0, 256)
-  grad.addColorStop(0, '#3f86d6')
-  grad.addColorStop(0.3, '#7fb6ea')
-  grad.addColorStop(0.46, '#cfe2ef')
-  grad.addColorStop(0.5, '#f4e9d6')
-  grad.addColorStop(0.56, '#c9d4c0')
-  grad.addColorStop(1, '#8fa47a')
+  for (const [at, color] of stops) grad.addColorStop(at, color)
   g.fillStyle = grad
   g.fillRect(0, 0, 4, 256)
   const t = new THREE.CanvasTexture(c)
   t.colorSpace = THREE.SRGBColorSpace
   t.mapping = THREE.EquirectangularReflectionMapping
+  return t
+}
+
+/** Soft warm disc for lamp light pooled on the ground (night maps). */
+function poolTexture(): THREE.CanvasTexture {
+  const t = canvasTex(64, (g, s) => {
+    const r = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2)
+    r.addColorStop(0, 'rgba(255,255,255,0.9)')
+    r.addColorStop(0.45, 'rgba(255,255,255,0.35)')
+    r.addColorStop(1, 'rgba(255,255,255,0)')
+    g.fillStyle = r
+    g.fillRect(0, 0, s, s)
+  })
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping
   return t
 }

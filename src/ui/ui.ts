@@ -236,7 +236,7 @@ export class Ui {
         <div class="menu"></div>
         <div class="best"></div>
       </div>
-      <div class="title-foot">Base Aurora &nbsp;·&nbsp; WASD + mouse &nbsp;·&nbsp; roda em Chromebook e PC fraco</div>`)
+      <div class="title-foot">3 mapas &nbsp;·&nbsp; WASD + mouse &nbsp;·&nbsp; roda em Chromebook e PC fraco</div>`)
     const sizes = el('div', 'team-size', `<span>TAMANHO DO TIME</span><div class="segs"></div>`)
     for (const size of [2, 3, 4, 5] as const) {
       const b = el('button', `seg-btn ${this.save.data.teamSize === size ? 'on' : ''}`, `${size}v${size}`)
@@ -253,8 +253,8 @@ export class Ui {
     n.querySelector('.menu')!.append(
       this.button('TÁTICO · SPIKE', () => this.actions.play('tactical'), 'primary tac-play', ''),
       sizes,
-      this.button('MATA-MATA', () => this.actions.play('deathmatch'), '', '6 rivais · primeiro a 20'),
-      this.button('SOBREVIVÊNCIA', () => this.actions.play('onslaught'), '', '8 ondas · chefe final'),
+      this.button('MATA-MATA', () => this.actions.play('deathmatch'), '', 'Mercado · 6 rivais · primeiro a 20'),
+      this.button('SOBREVIVÊNCIA', () => this.actions.play('onslaught'), '', 'Fortaleza · 8 ondas · chefe final'),
       online,
       this.button(this.t.t('menu.controls'), () => this.push('controls')),
       this.button(this.t.t('menu.settings'), () => this.push('settings')),
@@ -266,7 +266,7 @@ export class Ui {
     const n = this.screens.get('title')!
     const size = this.save.data.teamSize
     const sub = n.querySelector<HTMLElement>('.tac-play small') ?? n.querySelector<HTMLElement>('.tac-play')!.appendChild(el('small'))
-    sub.textContent = `${size}v${size} contra bots · primeiro a 5 rodadas`
+    sub.textContent = `Aurora · ${size}v${size} contra bots · primeiro a 5 rodadas`
     const lb = this.save.data.leaderboard
     const o = lb.find(e => e.name === 'SOBREVIVÊNCIA')
     const d = lb.find(e => e.name === 'DEATHMATCH')
