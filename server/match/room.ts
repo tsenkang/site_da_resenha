@@ -10,13 +10,13 @@
  * 3v2 rooms play out; host-driven bots are the next step (see docs/ONLINE.md).
  */
 import {
-  attackingTeam, buy, createTactical, defuseSpike, plantSpike, registerKill, setShield, tacticalConfig, tickTactical,
+  attackingTeam, buy, createTactical, defuseSpike, plantSpike, registerKill, setCarrier, setShield, tacticalConfig, tickTactical, useAbility,
   type LoadoutWeapon, type TacticalEvent, type TacticalState, type TeamIndex, type TeamSize,
 } from '../../src/game/tactical.ts'
 import {
   canStart, createLobby, fillWithBots, joinLobby, leaveLobby, lobbyView, setFillBots, setReady, switchTeam, type Lobby,
 } from '../../src/net/lobby.ts'
-import { NET_RATE, type ClientMessage, type ErrorCode, type PlayerFrame, type RoundView, type ServerMessage } from '../../src/net/protocol.ts'
+import { NET_RATE, type ClientMessage, type ErrorCode, type PlayerFrame, type RoundView, type ServerMessage, type Vec3 } from '../../src/net/protocol.ts'
 
 export type Conn = { id: string; name: string; send(msg: ServerMessage): void }
 
@@ -28,8 +28,23 @@ export const WEAPON_LIMITS: Record<LoadoutWeapon, { interval: number; maxDamage:
 }
 const MAX_SPEED = 9.5
 const POS_TOLERANCE = 6
+/** Frag grenade: blast radius and peak damage (matches the client explosion). */
+export const GRENADE = { radius: 5.7, damage: 125 }
+/** Reach for picking up a dropped spike and for defusing a planted one. */
+const PICKUP_RANGE = 1.8
+const DEFUSE_RANGE = 2.6
+/** Smokes/grenades must land within this distance of the thrower's last position. */
+const THROW_RANGE = 45
 
-type Live = { frame: PlayerFrame | null; frameAt: number; hp: number; shield: number; lastShot: number }
+const dist3 = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
+const distXZ = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[2] - b[2])
+
+/**
+ * `fireBudget`: seconds of trigger time banked (capped at FIRE_BURST). Each accepted hit spends its
+ * weapon's fire interval, so two shots that reach the server inside one tick still both count.
+ */
+type Live = { frame: PlayerFrame | null; frameAt: number; hp: number; shield: number; fireBudget: number }
+const FIRE_BURST = 0.2
 
 export class Room {
   readonly code: string
@@ -44,6 +59,10 @@ export class Room {
   private tickN = 0
   private snapT = 0
   private roundSentKey = ''
+  /** Where the spike lies when nobody carries it (dropped or planted); null at round start. */
+  spikePos: Vec3 | null = null
+  /** Random source for the spike carrier (tests make it deterministic). */
+  rand: () => number = Math.random
 
   constructor(code: string, teamSize: TeamSize, host: Conn) {
     this.code = code
@@ -75,7 +94,7 @@ export class Room {
     this.lobby = next
     // A player who leaves mid-match counts as dead for the round.
     const rid = this.toRules.get(id)
-    if (this.state && rid !== undefined) this.apply(registerKill(this.state, -1, rid))
+    if (this.state && rid !== undefined) this.kill(-1, rid)
     this.broadcastLobby()
   }
 
@@ -119,14 +138,21 @@ export class Room {
       }
       case 'plant': {
         const rid = this.toRules.get(id)
-        if (!this.state || rid === undefined) return
-        return this.apply(plantSpike(this.state, rid, msg.site))
+        const f = this.live.get(id)?.frame
+        if (!this.state || rid === undefined || !f || this.state.spike.carrier !== rid) return
+        const r = plantSpike(this.state, rid, msg.site)
+        if (r.state.spike.planted) this.spikePos = [...f.pos]
+        return this.apply(r)
       }
       case 'defuse': {
         const rid = this.toRules.get(id)
-        if (!this.state || rid === undefined) return
+        const f = this.live.get(id)?.frame
+        if (!this.state || rid === undefined || !f || !this.spikePos || distXZ(f.pos, this.spikePos) > DEFUSE_RANGE) return
         return this.apply(defuseSpike(this.state, rid))
       }
+      case 'smoke':
+      case 'grenade':
+        return this.onThrow(id, msg.t, msg.at)
       case 'ping':
         this.conns.get(id)?.send({ t: 'pong', at: msg.at, server: Date.now() })
         return
@@ -142,14 +168,13 @@ export class Room {
     this.lobby.members.forEach((m, i) => {
       this.toRules.set(m.id, i)
       this.toNet.set(i, m.id)
-      this.live.set(m.id, { frame: null, frameAt: 0, hp: 100, shield: 0, lastShot: -1 })
+      this.live.set(m.id, { frame: null, frameAt: 0, hp: 100, shield: 0, fireBudget: FIRE_BURST })
     })
-    const roster = this.lobby.members.map((m, i) => ({ id: i, name: m.name, team: m.team }))
-    this.state = createTactical(tacticalConfig(this.lobby.teamSize), roster)
+    this.state = createTactical(tacticalConfig(this.lobby.teamSize), this.lobby.members.map((m, i) => ({ id: i, name: m.name, team: m.team })))
     this.broadcastLobby()
-    for (const m of this.lobby.members) this.conns.get(m.id)?.send({ t: 'matchStart', you: m.id, team: m.team })
-    this.resetRoundLives()
-    this.eliminatePlaceholders()
+    const roster = this.lobby.members.map(m => m.id)
+    for (const m of this.lobby.members) this.conns.get(m.id)?.send({ t: 'matchStart', you: m.id, team: m.team, roster })
+    this.beginRound()
     this.sendRound(true)
   }
 
@@ -183,7 +208,7 @@ export class Room {
     if (weapon !== 'pistol' && sp.loadout.weapon !== weapon) return
     const lim = WEAPON_LIMITS[weapon]
     const sl = this.live.get(shooter)!
-    if (this.time - sl.lastShot < lim.interval) return
+    if (sl.fireBudget < lim.interval - 1e-6) return
     if (distance > lim.range) return
     const sf = sl.frame
     const tf = this.live.get(target)!.frame
@@ -191,17 +216,58 @@ export class Room {
       const real = Math.hypot(sf.pos[0] - tf.pos[0], sf.pos[1] - tf.pos[1], sf.pos[2] - tf.pos[2])
       if (Math.abs(real - distance) > POS_TOLERANCE + real * 0.15) return
     }
-    sl.lastShot = this.time
-    const amount = Math.min(lim.maxDamage, damage)
-    const tl = this.live.get(target)!
+    sl.fireBudget -= lim.interval
+    this.applyDamage(shooter, target, Math.min(lim.maxDamage, damage), headshot, weapon)
+  }
+
+  /** Server-side damage: shields soak first; at 0 hp the kill is scored. */
+  private applyDamage(shooter: string, target: string, amount: number, headshot: boolean, weapon: LoadoutWeapon | 'grenade'): void {
+    const st = this.state
+    const sr = this.toRules.get(shooter)
+    const tr = this.toRules.get(target)
+    const tl = this.live.get(target)
+    if (!st || sr === undefined || tr === undefined || !tl || !st.players[tr].alive || amount <= 0) return
     const soaked = Math.min(tl.shield, amount)
     tl.shield -= soaked
     tl.hp = Math.max(0, tl.hp - (amount - soaked))
     this.state = setShield(st, tr, tl.shield)
-    this.broadcast({ t: 'damage', target, by: shooter, amount, hp: tl.hp, headshot })
+    this.broadcast({ t: 'damage', target, by: shooter, amount, hp: tl.hp, shield: tl.shield, headshot })
     if (tl.hp <= 0) {
       this.broadcast({ t: 'kill', killer: shooter, victim: target, weapon, headshot })
-      this.apply(registerKill(this.state, sr, tr))
+      this.kill(sr === tr ? -1 : sr, tr)
+    }
+  }
+
+  /** A player is out: drops the spike where they stood, then scores the kill. */
+  private kill(killer: number, victim: number): void {
+    if (!this.state) return
+    if (this.state.spike.carrier === victim) {
+      const f = this.live.get(this.toNet.get(victim)!)?.frame
+      if (f) this.spikePos = [...f.pos]
+    }
+    this.apply(registerKill(this.state, killer, victim))
+  }
+
+  /** Smoke or frag thrown by a player who owns one; frags deal splash damage here (authoritative). */
+  private onThrow(id: string, kind: 'smoke' | 'grenade', at: Vec3): void {
+    const st = this.state
+    const rid = this.toRules.get(id)
+    const f = this.live.get(id)?.frame
+    if (!st || rid === undefined || !f || (st.phase !== 'combat' && st.phase !== 'planted')) return
+    const p = st.players[rid]
+    if (!p.alive || (kind === 'smoke' ? p.loadout.smokes : p.loadout.grenades) <= 0 || dist3(f.pos, at) > THROW_RANGE) return
+    this.state = useAbility(st, rid, kind)
+    this.broadcast({ t: kind, by: id, at })
+    if (kind !== 'grenade') return
+    for (const [target, l] of this.live) {
+      const tr = this.toRules.get(target)!
+      const tp = this.state.players[tr]
+      if (!l.frame || !tp.alive || (tp.team === p.team && target !== id)) continue
+      const d = dist3([l.frame.pos[0], l.frame.pos[1] + 0.9, l.frame.pos[2]], at)
+      if (d >= GRENADE.radius) continue
+      const k = 1 - d / GRENADE.radius
+      const dmg = GRENADE.damage * (0.25 + 0.75 * k * k) * (target === id ? 0.5 : 1)
+      this.applyDamage(id, target, Math.round(dmg), false, 'grenade')
     }
   }
 
@@ -219,7 +285,7 @@ export class Room {
       l.hp = 100
       l.shield = p.loadout.shield
       l.frame = null
-      l.lastShot = -1
+      l.fireBudget = FIRE_BURST
     }
   }
 
@@ -227,7 +293,9 @@ export class Room {
   tick(dt: number): void {
     this.time += dt
     if (!this.state) return
+    for (const l of this.live.values()) l.fireBudget = Math.min(FIRE_BURST, l.fireBudget + dt)
     this.apply(tickTactical(this.state, dt))
+    this.pickUpSpike()
     this.snapT -= dt
     if (this.snapT <= 0) {
       this.snapT = 1 / NET_RATE
@@ -242,19 +310,41 @@ export class Room {
 
   private apply(r: { state: TacticalState; events: TacticalEvent[] }): void {
     this.state = r.state
-    if (r.events.some(e => e.type === 'roundStart')) {
-      this.resetRoundLives()
-      this.eliminatePlaceholders()
-    }
+    if (r.events.some(e => e.type === 'roundStart')) this.beginRound()
     if (r.events.length) this.sendRound(true)
+  }
+
+  /** New round: full health, the spike goes to a random human attacker, open slots sit out. */
+  private beginRound(): void {
+    if (!this.state) return
+    this.resetRoundLives()
+    this.spikePos = null
+    const atk = attackingTeam(this.state)
+    const humans = this.lobby.members.filter(m => !m.bot && m.team === atk).map(m => this.toRules.get(m.id)!)
+    if (humans.length) this.state = setCarrier(this.state, humans[Math.floor(this.rand() * humans.length)])
+    this.eliminatePlaceholders()
+  }
+
+  /** A living attacker walking over the dropped spike picks it up. */
+  private pickUpSpike(): void {
+    const st = this.state
+    if (!st || st.spike.carrier !== null || st.spike.planted || !this.spikePos || (st.phase !== 'combat' && st.phase !== 'buy')) return
+    const atk = attackingTeam(st)
+    for (const [id, l] of this.live) {
+      const rid = this.toRules.get(id)!
+      const p = st.players[rid]
+      if (!l.frame || !p.alive || p.team !== atk || distXZ(l.frame.pos, this.spikePos) > PICKUP_RANGE) continue
+      this.state = setCarrier(st, rid)
+      this.spikePos = null
+      return this.sendRound(true)
+    }
   }
 
   /** Placeholder slots start each round out of play (no kill credit, no credits change). */
   private eliminatePlaceholders(): void {
     for (const m of this.lobby.members) {
       if (!m.bot || !this.state) continue
-      const r = registerKill(this.state, -1, this.toRules.get(m.id)!)
-      this.state = r.state
+      this.state = registerKill(this.state, -1, this.toRules.get(m.id)!).state
     }
   }
 
@@ -281,6 +371,7 @@ export class Room {
     if (!force && key === this.roundSentKey) return
     this.roundSentKey = key
     this.broadcast({ t: 'round', round: v })
+    this.broadcast({ t: 'state', s: this.state!, spikePos: this.spikePos })
   }
 
   private broadcastLobby(): void {

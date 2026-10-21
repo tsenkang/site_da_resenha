@@ -99,6 +99,8 @@ export class Bot {
   absorb = CONFIG.player.armorAbsorb
   /** Seconds the director has kept this bot still (planting / defusing). */
   busy = false
+  /** Online: another player's avatar, posed from network frames instead of the AI (see puppet). */
+  remote = false
   private holdLook: { x: number; z: number } | null = null
   /** Uniform model scale (1 = human-sized). */
   readonly scale: number
@@ -688,6 +690,51 @@ export class Bot {
     a[3] = Math.atan2(Math.sin(aimYaw), Math.cos(aimYaw))
     a[4] = Math.asin(THREE.MathUtils.clamp(this.aimDir.y, -1, 1))
     void time
+  }
+
+  /**
+   * Online avatar: place at an interpolated network pose (once per fixed step) and feed the same
+   * pose inputs the AI would, so walking, aiming and crouching animate like any other character.
+   */
+  puppet(dt: number, at: THREE.Vector3, yaw: number, pitch: number): void {
+    this.prevPos.copy(this.pos)
+    this.prevYaw = this.yaw
+    if (!this.alive) return
+    this.vel.subVectors(at, this.pos).divideScalar(Math.max(dt, 1e-3)).setY(0)
+    if (this.vel.lengthSq() > 400) this.vel.set(0, 0, 0)
+    this.pos.copy(at)
+    let dy = yaw - this.yaw
+    dy = Math.atan2(Math.sin(dy), Math.cos(dy))
+    this.yaw += dy
+    const cp = Math.cos(pitch)
+    this.aimDir.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp)
+    const cy = at.y + 0.93 * this.scale
+    this.body.setNextKinematicTranslation({ x: at.x, y: cy, z: at.z })
+    const sp = Math.hypot(this.vel.x, this.vel.z)
+    const fx = -Math.sin(this.yaw)
+    const fz = -Math.cos(this.yaw)
+    const a = this.animArgs
+    a[0] = sp
+    a[1] = sp > 0.1 ? (this.vel.x * fx + this.vel.z * fz) / sp : 0
+    a[2] = sp > 0.1 ? (this.vel.x * -fz + this.vel.z * fx) / sp : 0
+    a[3] = 0
+    a[4] = pitch
+  }
+
+  /** Online avatar fired: muzzle flash, tracer and sound only (the server owns damage). */
+  remoteShot(): void {
+    this.anim.fire()
+    this.parts.muzzle.getWorldPosition(this.muzzleWorld)
+    const muzzle = this.muzzleWorld
+    const vis = new THREE.Color(this.visor)
+    const col: [number, number, number, number] = [vis.r * 6, vis.g * 6, vis.b * 6, 1]
+    this.world.fx.muzzle(muzzle.clone(), this.aimDir, col, 0.8)
+    this.world.fx.flash(muzzle.clone(), this.visor, 7, 0.06, 7)
+    this.world.audio.play('enemy_shot', { volume: 0.85, pos: muzzle, jitter: 0.06, ref: 5 })
+    const eye = this.eye.clone()
+    const hit = this.world.raycast(eye, this.aimDir, 140, this.collider.handle)
+    this.world.fx.tracer(muzzle, hit ? hit.point : eye.addScaledVector(this.aimDir, 140), col, 150, 0.035)
+    if (hit && hit.tag?.kind === 'world') this.world.fx.impact(hit.point, hit.normal, hit.tag.surface)
   }
 
   /** The Warden's signature attacks: close-range ground slam and drone reinforcements. */

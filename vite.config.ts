@@ -13,7 +13,10 @@ export default defineConfig(({ mode }) => {
     server: {
       host: env.HOST ?? '127.0.0.1', port, strictPort: true,
       allowedHosts: ['.manuspre.computer', '.manus.computer', '.manus-asia.computer', '.manuscomputer.ai', '.manusvm.computer', 'localhost', '127.0.0.1'],
+      // Online play in dev: `pnpm server` on :8787, the game connects to /ws on this origin.
+      proxy: { '/ws': { target: 'ws://127.0.0.1:8787', ws: true } },
     },
+    preview: { proxy: { '/ws': { target: 'ws://127.0.0.1:8787', ws: true } } },
     build: { target: 'es2022', assetsInlineLimit: 0, chunkSizeWarningLimit: 4600, sourcemap: false },
     test: { environment: 'node', include: ['tests/**/*.test.{ts,mjs}'] },
   }

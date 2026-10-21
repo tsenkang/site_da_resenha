@@ -13,7 +13,7 @@
  * Every message is a plain object with a `t` tag. `parseClientMessage` turns untrusted input into
  * a typed message or null; nothing else on the server touches raw JSON.
  */
-import type { LoadoutWeapon, ShopItem, SiteId, TacticalPhase, TeamIndex, TeamSize } from '../game/tactical.ts'
+import type { LoadoutWeapon, ShopItem, SiteId, TacticalPhase, TacticalState, TeamIndex, TeamSize } from '../game/tactical.ts'
 
 export const PROTOCOL_VERSION = 1
 /** Client → server state frames and server snapshots per second. */
@@ -32,6 +32,8 @@ export type PlayerFrame = {
   /** Bit flags: 1 crouch, 2 walking (silent), 4 firing, 8 aiming, 16 planting/defusing. */
   flags: number
   weapon: LoadoutWeapon
+  /** Shots fired since the previous frame (remote muzzle flashes and tracers). */
+  shots?: number
 }
 
 export type HitClaim = { target: string; damage: number; headshot: boolean; weapon: LoadoutWeapon; distance: number }
@@ -51,6 +53,8 @@ export type ClientMessage =
   | { t: 'buy'; item: ShopItem }
   | { t: 'plant'; site: SiteId }
   | { t: 'defuse' }
+  | { t: 'smoke'; at: Vec3 }
+  | { t: 'grenade'; at: Vec3 }
   | { t: 'ping'; at: number }
 
 // ─── server → client ────────────────────────────────────────────────────
@@ -73,15 +77,20 @@ export type ServerMessage =
   | { t: 'welcome'; v: number; id: string }
   | { t: 'error'; code: ErrorCode; message: string }
   | { t: 'lobby'; lobby: LobbyView }
-  | { t: 'matchStart'; you: string; team: TeamIndex }
+  | { t: 'matchStart'; you: string; team: TeamIndex; roster: string[] }
   | { t: 'round'; round: RoundView }
+  /** Full rules state (player ids are indexes into matchStart.roster) and where the spike lies. */
+  | { t: 'state'; s: TacticalState; spikePos: Vec3 | null }
   | { t: 'snapshot'; s: Snapshot }
-  | { t: 'damage'; target: string; by: string; amount: number; hp: number; headshot: boolean }
-  | { t: 'kill'; killer: string; victim: string; weapon: LoadoutWeapon; headshot: boolean }
+  | { t: 'damage'; target: string; by: string; amount: number; hp: number; shield: number; headshot: boolean }
+  | { t: 'smoke'; by: string; at: Vec3 }
+  | { t: 'grenade'; by: string; at: Vec3 }
+  | { t: 'kill'; killer: string; victim: string; weapon: LoadoutWeapon | 'grenade'; headshot: boolean }
   | { t: 'buyResult'; item: ShopItem; ok: boolean; reason?: string }
   | { t: 'pong'; at: number; server: number }
 
-export type ErrorCode = 'version' | 'bad_message' | 'no_room' | 'room_full' | 'not_host' | 'not_ready' | 'in_match' | 'rate'
+/** `closed` is emitted locally by the client when the socket drops (never sent by the server). */
+export type ErrorCode = 'version' | 'bad_message' | 'no_room' | 'room_full' | 'not_host' | 'not_ready' | 'in_match' | 'rate' | 'closed'
 
 // ─── validation (untrusted input) ───────────────────────────────────────
 const WEAPONS: readonly LoadoutWeapon[] = ['pistol', 'shotgun', 'rifle']
@@ -105,7 +114,9 @@ function parseFrame(f: unknown): PlayerFrame | null {
   const o = f as Record<string, unknown>
   if (!isNum(o.seq, 0, 2 ** 31) || !isVec(o.pos) || !isNum(o.yaw, -100, 100) || !isNum(o.pitch, -2, 2) || !isNum(o.flags, 0, 255)) return null
   if (!WEAPONS.includes(o.weapon as LoadoutWeapon)) return null
-  return { seq: Math.floor(o.seq), pos: o.pos, yaw: o.yaw, pitch: o.pitch, flags: Math.floor(o.flags), weapon: o.weapon as LoadoutWeapon }
+  if (o.shots !== undefined && !isNum(o.shots, 0, 20)) return null
+  const shots = o.shots === undefined ? 0 : Math.floor(o.shots as number)
+  return { seq: Math.floor(o.seq), pos: o.pos, yaw: o.yaw, pitch: o.pitch, flags: Math.floor(o.flags), weapon: o.weapon as LoadoutWeapon, shots }
 }
 
 /** Parse a raw WebSocket payload. Returns null for anything malformed or oversized. */
@@ -151,6 +162,9 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
       return ITEMS.includes(o.item as ShopItem) ? { t: 'buy', item: o.item as ShopItem } : null
     case 'plant':
       return o.site === 'A' || o.site === 'B' ? { t: 'plant', site: o.site } : null
+    case 'smoke':
+    case 'grenade':
+      return isVec(o.at) ? { t: o.t, at: o.at } : null
     case 'ping':
       return isNum(o.at, 0, 1e15) ? { t: 'ping', at: o.at } : null
     default:

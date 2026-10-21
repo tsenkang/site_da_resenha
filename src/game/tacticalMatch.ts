@@ -2,6 +2,9 @@ import * as THREE from 'three'
 import { MAP_SCALE, type Site, type SiteId, type TeamSide } from './arena'
 import type { Bot, Objective } from './bots'
 import type { Game } from './game'
+import type { NetLink } from '../net/link'
+import type { ServerMessage, Vec3 } from '../net/protocol'
+import { diffEvents } from '../net/view'
 import {
   aliveCount, attackingTeam, botBuyPlan, buy, createTactical, defuseSpike, plantSpike, registerKill, setCarrier, setShield, sideOf, SHOP,
   startRound, tacticalConfig, tickTactical, useAbility, type BuyResult, type Loadout, type RoundEndReason, type ShopItem,
@@ -49,7 +52,8 @@ export type MinimapState = {
 }
 
 type Smoke = { mesh: THREE.Mesh; pos: THREE.Vector3; r: number; life: number }
-type Thrown = { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; fuse: number }
+/** `mine`: thrown by the local player (online: reported to the server when it lands). */
+type Thrown = { mesh: THREE.Mesh; pos: THREE.Vector3; vel: THREE.Vector3; fuse: number; mine: boolean }
 
 /** Defensive anchor spots per site: where to stand and which entrance to watch. */
 const S = MAP_SCALE
@@ -98,18 +102,33 @@ export class TacticalMatch {
   private hint: string | null = null
   private detonated = false
   private readonly smokeWarm: THREE.Mesh
+  /** Online: the server owns the rules; this director only presents them (null offline). */
+  readonly net: NetLink | null
+  private readonly netOff: (() => void)[] = []
 
-  constructor(private readonly game: Game, teamSize: TeamSize) {
+  constructor(private readonly game: Game, teamSize: TeamSize, net: NetLink | null = null) {
     this.teamSize = teamSize
-    for (let i = 0; i < teamSize - 1; i += 1) this.allies.push(game.createTacticalBot(ALLY_ID0 + i, ALLY_NAMES[i], 0))
-    for (let i = 0; i < teamSize; i += 1) this.enemies.push(game.createTacticalBot(ENEMY_ID0 + i, ENEMY_NAMES[i], 1))
+    this.net = net
+    if (net) {
+      // Everyone else is a network-driven avatar (no AI); open slots stay out of play.
+      for (const p of net.state.players) {
+        if (p.id === 0 || p.id < 0) continue
+        const b = game.createTacticalBot(p.id, p.name, p.team)
+        b.remote = true
+        ;(p.team === 0 ? this.allies : this.enemies).push(b)
+      }
+      this.state = net.state
+    } else {
+      for (let i = 0; i < teamSize - 1; i += 1) this.allies.push(game.createTacticalBot(ALLY_ID0 + i, ALLY_NAMES[i], 0))
+      for (let i = 0; i < teamSize; i += 1) this.enemies.push(game.createTacticalBot(ENEMY_ID0 + i, ENEMY_NAMES[i], 1))
+      const roster = [
+        { id: 0, name: 'VOCÊ', team: 0 as TeamIndex },
+        ...this.allies.map(b => ({ id: b.id, name: b.name, team: 0 as TeamIndex })),
+        ...this.enemies.map(b => ({ id: b.id, name: b.name, team: 1 as TeamIndex })),
+      ]
+      this.state = createTactical(tacticalConfig(teamSize), roster)
+    }
     for (const b of [...this.allies, ...this.enemies]) this.byId.set(b.id, b)
-    const roster = [
-      { id: 0, name: 'VOCÊ', team: 0 as TeamIndex },
-      ...this.allies.map(b => ({ id: b.id, name: b.name, team: 0 as TeamIndex })),
-      ...this.enemies.map(b => ({ id: b.id, name: b.name, team: 1 as TeamIndex })),
-    ]
-    this.state = createTactical(tacticalConfig(teamSize), roster)
     const built = buildSpike()
     this.spikeMesh = built.group
     this.spikeGlow = built.glow
@@ -120,6 +139,73 @@ export class TacticalMatch {
     this.smokeWarm.visible = false
     game.scene.add(this.smokeWarm)
     this.setupRound()
+    if (net) this.listen(net)
+  }
+
+  // ─── online ───────────────────────────────────────────────────────────
+  private listen(net: NetLink): void {
+    const c = net.client
+    const g = this.game
+    this.netOff.push(
+      c.on('state', m => this.onServerState(m)),
+      c.on('damage', m => g.netDamage(net.local(m.target), net.local(m.by), m.hp, m.shield)),
+      c.on('kill', m => g.netKill(net.local(m.killer), net.local(m.victim), m.headshot, m.weapon)),
+      c.on('smoke', m => {
+        if (m.by !== net.me) this.spawnSmoke(new THREE.Vector3(...m.at))
+      }),
+      c.on('grenade', m => {
+        if (m.by !== net.me) g.explode(new THREE.Vector3(...m.at), 5.2, 0, -1, 'grenade')
+      }),
+    )
+    // Our own state goes out at the network rate while alive.
+    c.streamFrames(() => {
+      const p = g.player
+      if (!p.alive || g.mode === 'ended') return null
+      return { pos: [p.position.x, p.position.y, p.position.z], yaw: p.yaw, pitch: p.pitch, flags: p.crouch > 0.5 ? 1 : 0, weapon: g.heldLoadoutWeapon(), shots: g.takeNetShots() }
+    })
+  }
+
+  /** New authoritative state: diff it into the usual events and follow loadout changes. */
+  private onServerState(m: Extract<ServerMessage, { t: 'state' }>): void {
+    const net = this.net!
+    const prev = this.state
+    const before = this.me.loadout
+    const next = net.accept(m.s, m.spikePos)
+    this.state = next
+    if (m.spikePos) this.spikePos.set(...(m.spikePos as Vec3))
+    const events = diffEvents(prev, next)
+    for (const e of events) this.onEvent(e)
+    if (prev.spike.carrier !== 0 && next.spike.carrier === 0 && !events.some(e => e.type === 'roundStart')) this.game.events.message('VOCÊ PEGOU A SPIKE', 'good')
+    // The spike on the ground: dropped (nobody carries it) or planted.
+    const dropped = !next.spike.planted && next.spike.carrier === null && !!m.spikePos
+    if (next.spike.planted || dropped) {
+      this.spikeMesh.position.copy(this.spikePos)
+      this.spikeMesh.visible = this.state.phase !== 'roundEnd' || next.spike.planted
+    } else this.spikeMesh.visible = false
+    if (events.some(e => e.type === 'roundStart')) return
+    const l = this.me.loadout
+    const g = this.game
+    if (l.weapon !== before.weapon) g.arsenal.setLoadout(l.weapon === 'pistol' ? null : l.weapon, false)
+    if (l.shield > before.shield && next.phase === 'buy') g.player.armor = l.shield
+    if (l.grenades !== before.grenades) g.setGrenades(l.grenades)
+  }
+
+  /** Remote avatars follow their interpolated network pose and replay their shots. */
+  private poseRemotes(dt: number): void {
+    const net = this.net!
+    for (const b of this.bots) {
+      if (!b.alive) continue
+      const id = net.net(b.id)
+      const pose = id ? net.pose(id) : null
+      if (!id || !pose) continue
+      b.puppet(dt, tmp.set(pose.pos[0], pose.pos[1], pose.pos[2]), pose.yaw, pose.pitch)
+      for (let n = Math.min(3, net.takeShots(id)); n > 0; n -= 1) b.remoteShot()
+    }
+  }
+
+  /** Attacking team in the local frame (online you may be on the server's second team). */
+  private get atk(): TeamIndex {
+    return (attackingTeam(this.state) ^ (this.net?.ids.flip ?? 0)) as TeamIndex
   }
 
   get bots(): Bot[] {
@@ -133,11 +219,11 @@ export class TacticalMatch {
   }
 
   private get playerSide(): Side {
-    return sideOf(0, this.state.round, this.state.cfg)
+    return this.sideOfTeam(0)
   }
 
   private sideOfTeam(team: TeamIndex): Side {
-    return sideOf(team, this.state.round, this.state.cfg)
+    return sideOf((team ^ (this.net?.ids.flip ?? 0)) as TeamIndex, this.state.round, this.state.cfg)
   }
 
   // ─── round setup ──────────────────────────────────────────────────────
@@ -152,12 +238,15 @@ export class TacticalMatch {
     this.spikeMesh.visible = false
     this.clearSmokes()
     this.targetSite = Math.random() < 0.5 ? 'A' : 'B'
-    // Like the real thing, the spike goes to a random attacker (the rules default to the first).
-    const atkIds = st.players.filter(p => p.team === attackingTeam(st)).map(p => p.id)
-    this.state = setCarrier(this.state, atkIds[Math.floor(Math.random() * atkIds.length)])
     g.arena.setBarriers(true)
+    this.net?.clearPoses()
+    // Offline: the spike goes to a random attacker and bots shop (online the server decides both).
+    if (!this.net) {
+      const atkIds = st.players.filter(p => p.team === this.atk).map(p => p.id)
+      this.state = setCarrier(this.state, atkIds[Math.floor(Math.random() * atkIds.length)])
+    }
     // Bots shop first (team credits drive whether they full-buy together).
-    for (const team of [0, 1] as TeamIndex[]) {
+    for (const team of this.net ? [] : ([0, 1] as TeamIndex[])) {
       const teamCredits = st.players.filter(p => p.team === team).reduce((n, p) => n + p.credits, 0)
       for (const p of st.players) {
         if (p.team !== team || p.id === 0) continue
@@ -170,17 +259,21 @@ export class TacticalMatch {
     const spawnFor = (team: TeamIndex): THREE.Vector3[] => g.arena.teamSpawns[this.sideOfTeam(team) as TeamSide]
     const yawFor = (team: TeamIndex) => (this.sideOfTeam(team) === 'attack' ? 0 : Math.PI)
     const s0 = spawnFor(0)
-    g.player.spawn(s0[0], yawFor(0))
+    // Online the roster order picks spawn slots so teammates never stack.
+    const slot = this.net ? Math.max(0, this.state.players.filter(p => p.team === 0).findIndex(p => p.id === 0)) : 0
+    g.player.spawn(s0[slot % s0.length], yawFor(0))
     g.player.protect = 0
     g.player.maxHealth = 100
     g.player.health = 100
     g.player.maxArmor = 50
     this.applyPlayerLoadout()
-    this.allies.forEach((b, i) => this.spawnBot(b, s0[(i + 1) % s0.length], yawFor(0)))
+    this.allies.forEach((b, i) => this.spawnBot(b, s0[(i < slot ? i : i + 1) % s0.length], yawFor(0)))
     const s1 = spawnFor(1)
     this.enemies.forEach((b, i) => this.spawnBot(b, s1[i % s1.length], yawFor(1)))
+    // Online open slots sit the round out.
+    if (this.net) for (const b of this.bots) if (!this.state.players.find(p => p.id === b.id)?.alive) b.hide()
     g.onTacticalRound()
-    const atk = attackingTeam(this.state)
+    const atk = this.atk
     g.events.wave({ title: `RODADA ${st.round}`, subtitle: atk === 0 ? 'ATAQUE · PLANTE A SPIKE' : 'DEFESA · PROTEJA OS LOCAIS', kind: 'intro' })
     if (this.state.spike.carrier === 0) g.events.message('VOCÊ ESTÁ COM A SPIKE', 'good')
   }
@@ -228,6 +321,12 @@ export class TacticalMatch {
     const before = this.me.loadout
     const r = buy(this.state, 0, item)
     if (!r.ok) return r
+    if (this.net) {
+      // The server applies the purchase; its next state brings the new loadout.
+      this.net.client.send({ t: 'buy', item })
+      this.game.audio.play('pickup_ammo', { volume: 0.7 })
+      return r
+    }
     this.state = r.state
     const l = this.me.loadout
     if (l.weapon !== before.weapon) this.game.arsenal.setLoadout(l.weapon === 'pistol' ? null : l.weapon, false)
@@ -244,6 +343,12 @@ export class TacticalMatch {
   // ─── events from the game ─────────────────────────────────────────────
   /** Someone died (player id 0 or a bot). Handles spike drop and round elimination. */
   onDeath(victim: number, killer: number, at: THREE.Vector3): void {
+    if (this.net) {
+      // Online the server scores deaths and places the dropped spike.
+      if (victim === this.plantBy) this.plantT = 0
+      if (victim === this.defuseBy) this.defuseT = 0
+      return
+    }
     if (this.state.spike.carrier === victim) {
       this.spikePos.copy(at).setY(this.game.arena.groundAt(at.x, at.z, at.y + 1))
       this.spikeMesh.position.copy(this.spikePos)
@@ -259,6 +364,7 @@ export class TacticalMatch {
 
   /** Player shield after damage is kept so survivors carry partial shields. */
   syncShields(): void {
+    if (this.net) return
     let s = this.state
     if (this.game.player.alive) s = setShield(s, 0, this.game.player.armor)
     for (const b of this.bots) if (b.alive) s = setShield(s, b.id, b.armor)
@@ -322,6 +428,7 @@ export class TacticalMatch {
     g.audio.play('explosion', { volume: 1.4, pos: at, rate: 0.7 })
     g.renderer.fx.flash = 0.7
     this.spikeMesh.visible = false
+    if (this.net) return
     if (g.player.alive && g.player.position.distanceTo(at) < 14) g.killPlayerSilently()
     for (const b of this.bots) if (b.alive && b.pos.distanceTo(at) < 14) g.killBotSilently(b)
   }
@@ -331,14 +438,20 @@ export class TacticalMatch {
     const g = this.game
     this.roundT += dt
     const before = this.state.phase
-    this.apply(tickTactical(this.state, dt))
+    if (this.net) {
+      g.flushNetHits(this.net)
+      // Count down locally between server updates; the server's next state corrects it.
+      const st = this.state
+      if (st.phase !== 'matchEnd') this.state = { ...st, timer: Math.max(0, st.timer - dt), spike: st.spike.planted ? { ...st.spike, timer: Math.max(0, st.spike.timer - dt) } : st.spike }
+      this.poseRemotes(dt)
+    } else this.apply(tickTactical(this.state, dt))
     const phase = this.state.phase
     if (phase === 'matchEnd' || phase !== before) return
     this.stepThrown(dt)
     this.stepSmokes(dt)
     this.hint = null
     if (phase === 'combat') {
-      this.stepPickup()
+      if (!this.net) this.stepPickup()
       this.stepPlant(dt)
     } else if (phase === 'planted') {
       this.stepDefuse(dt)
@@ -361,7 +474,7 @@ export class TacticalMatch {
     const g = this.game
     const st = this.state
     if (st.spike.carrier !== null || st.spike.planted) return
-    const atk = attackingTeam(st)
+    const atk = this.atk
     const near = (p: THREE.Vector3) => Math.hypot(p.x - this.spikePos.x, p.z - this.spikePos.z) < 1.6
     if (atk === 0 && g.player.alive && near(g.player.position)) {
       this.state = setCarrier(st, 0)
@@ -389,7 +502,7 @@ export class TacticalMatch {
       site = g.player.alive ? g.arena.siteAt(g.player.position) : undefined
       if (site) this.hint = 'SEGURE F PARA PLANTAR'
       channel = !!site && g.player.grounded && g.input.held('interact') && g.player.speed2d < 1.5
-    } else {
+    } else if (!this.net) {
       const b = this.byId.get(carrier)
       site = b?.alive ? g.arena.siteAt(b.pos) : undefined
       const near = b && site ? Math.hypot(b.pos.x - site.center.x, b.pos.z - site.center.z) < 5 : false
@@ -403,6 +516,11 @@ export class TacticalMatch {
     this.plantBy = carrier
     this.plantT += dt
     if (this.plantT >= this.state.cfg.plantTime) {
+      if (this.net) {
+        this.plantT = 0
+        this.net.client.send({ t: 'plant', site: site.id })
+        return
+      }
       const pos = carrier === 0 ? g.player.position : this.byId.get(carrier)!.pos
       this.spikePos.copy(pos).setY(g.arena.groundAt(pos.x, pos.z, pos.y + 1))
       this.plantT = 0
@@ -415,7 +533,7 @@ export class TacticalMatch {
   /** Defuse channel: player holds F next to the spike; the closest defending bot defuses when clear. */
   private stepDefuse(dt: number): void {
     const g = this.game
-    const def: TeamIndex = attackingTeam(this.state) === 0 ? 1 : 0
+    const def: TeamIndex = this.atk === 0 ? 1 : 0
     const dist = (p: THREE.Vector3) => Math.hypot(p.x - this.spikePos.x, p.z - this.spikePos.z)
     let who = -1
     if (def === 0 && g.player.alive && dist(g.player.position) < 2.2) {
@@ -424,7 +542,7 @@ export class TacticalMatch {
     }
     let best = 1.8
     let bot: Bot | undefined
-    for (const b of this.bots) {
+    for (const b of this.net ? [] : this.bots) {
       b.busy = false
       if (who >= 0 || !b.alive || b.team !== def || b.seesEnemy) continue
       const d = dist(b.pos)
@@ -448,6 +566,10 @@ export class TacticalMatch {
     this.defuseT += dt
     if (this.defuseT >= this.state.cfg.defuseTime) {
       this.defuseT = 0
+      if (this.net) {
+        this.net.client.send({ t: 'defuse' })
+        return
+      }
       if (bot) bot.busy = false
       this.apply(defuseSpike(this.state, who))
     }
@@ -519,13 +641,14 @@ export class TacticalMatch {
     const g = this.game
     const me = this.me
     if (!g.player.alive || me.loadout.smokes <= 0 || this.state.phase === 'buy' || this.state.phase === 'roundEnd') return false
+    // Online the server spends the smoke when it lands (see stepThrown); offline it is spent now.
     this.state = useAbility(this.state, 0, 'smoke')
     const eye = g.player.eye(1, new THREE.Vector3())
     const fwd = g.player.forward(new THREE.Vector3())
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), new THREE.MeshLambertMaterial({ color: '#9fb7c9' }))
     mesh.position.copy(eye)
     g.scene.add(mesh)
-    this.thrown.push({ mesh, pos: eye.clone().addScaledVector(fwd, 0.5), vel: fwd.multiplyScalar(18).add(new THREE.Vector3(0, 4, 0)), fuse: 1.6 })
+    this.thrown.push({ mesh, pos: eye.clone().addScaledVector(fwd, 0.5), vel: fwd.multiplyScalar(18).add(new THREE.Vector3(0, 4, 0)), fuse: 1.6, mine: true })
     g.audio.play('grenade_throw', { volume: 0.8 })
     return true
   }
@@ -547,6 +670,7 @@ export class TacticalMatch {
         this.game.scene.remove(t.mesh)
         this.thrown.splice(i, 1)
         this.spawnSmoke(t.pos.clone())
+        if (t.mine && this.net) this.net.client.send({ t: 'smoke', at: [t.pos.x, t.pos.y, t.pos.z] })
       }
     }
   }
@@ -602,6 +726,7 @@ export class TacticalMatch {
 
   /** Grenade thrown by the player: keep the economy in sync. */
   usedGrenade(): void {
+    if (this.net) return
     this.state = useAbility(this.state, 0, 'grenade')
   }
 
@@ -621,7 +746,7 @@ export class TacticalMatch {
     const st = this.state
     const me = this.me
     const carrier = st.spike.carrier
-    const atk = attackingTeam(st)
+    const atk = this.atk
     let progress: TacticalHud['progress'] = null
     if (this.plantT > 0 && this.plantBy === 0) progress = { kind: 'plant', t: this.plantT / st.cfg.plantTime }
     else if (this.defuseT > 0 && this.defuseBy === 0) progress = { kind: 'defuse', t: this.defuseT / st.cfg.defuseTime }
@@ -659,9 +784,9 @@ export class TacticalMatch {
   minimap(): MinimapState {
     const g = this.game
     const st = this.state
-    const showSpike = st.spike.planted || (st.spike.carrier === null && attackingTeam(st) === 0)
+    const showSpike = st.spike.planted || (st.spike.carrier === null && this.atk === 0)
     let spike: MinimapState['spike'] = showSpike ? { x: this.spikePos.x, z: this.spikePos.z, planted: st.spike.planted } : null
-    if (!spike && st.spike.carrier !== null && attackingTeam(st) === 0) {
+    if (!spike && st.spike.carrier !== null && this.atk === 0) {
       const c = st.spike.carrier === 0 ? g.player.position : this.byId.get(st.spike.carrier)?.pos
       if (c) spike = { x: c.x, z: c.z, planted: false }
     }
@@ -681,6 +806,12 @@ export class TacticalMatch {
   }
 
   dispose(): void {
+    for (const f of this.netOff) f()
+    this.netOff.length = 0
+    if (this.net) {
+      this.net.client.streamFrames(() => null)
+      this.net.dispose()
+    }
     this.clearSmokes()
     this.game.scene.remove(this.spikeMesh)
     this.game.scene.remove(this.smokeWarm)

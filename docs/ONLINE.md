@@ -1,7 +1,8 @@
-# Modo online (2v2 a 5v5): o que já existe e o que falta
+# Modo online (2v2 a 5v5)
 
-O jogo ainda é jogado contra bots, mas a base do online já está pronta e testada.
-Este documento explica como ela funciona e qual é o próximo passo.
+O modo tático já pode ser jogado online com amigos. Pelo menu **ONLINE** você cria uma sala,
+copia o convite e começa quando todos estiverem prontos. Para colocar no ar, veja
+[DEPLOY_RENDER.md](DEPLOY_RENDER.md).
 
 ## Como rodar o servidor
 
@@ -51,17 +52,34 @@ src/net/protocol.ts   (mesmos tipos)       room.ts    (lobby → partida, valida
 Tudo isso tem testes em `tests/net.test.ts`, incluindo um teste com dois clientes reais
 conectando por WebSocket, criando sala, entrando e começando a partida.
 
-## Próximos passos (em ordem)
+## Como o jogo usa a rede
 
-1. **Tela de lobby no jogo**: ligar o botão "ONLINE" a uma tela que cria sala, mostra o código,
-   lista os times e tem os botões "pronto" e "começar" (o `NetClient` já faz a conexão).
-2. **Jogadores remotos no mapa**: para cada jogador da sala, criar um personagem igual aos bots
-   (`createTacticalBot`) e mover pela interpolação dos `snapshot` (cerca de 100 ms de atraso).
-3. **Enviar o jogo local para a rede**: `streamFrames` com a posição e a mira do jogador, `hit`
-   quando o tiro acerta alguém remoto, `buy`, `plant` e `defuse` no lugar das chamadas locais
-   (o `TacticalMatch` passa a só mostrar o `round` que vem do servidor).
-4. **Bots online**: o computador do anfitrião roda a IA dos bots e envia os quadros deles.
-5. **Antitrapaça mais forte**: o servidor conferir a linha de tiro com o mapa (o mapa é
-   procedural e roda no Node) e compensar a latência voltando as posições no tempo.
+- **Lobby** (`src/ui/online.ts`): nome, criar sala (2v2 a 5v5), entrar com código ou pelo link
+  `?sala=CÓDIGO`, trocar de time, "pronto", vagas abertas e "começar" (só o anfitrião).
+- **Partida** (`src/net/link.ts` e `src/net/view.ts`): o modo tático local roda em "modo rede".
+  O servidor manda o estado completo das regras e o jogo só mostra o resultado:
+  - você vira o id 0 no time 0, e se você estiver no segundo time do servidor, times e placar
+    são espelhados;
+  - as mudanças de estado viram os mesmos eventos de sempre (combate, spike plantada, fim de
+    rodada, troca de lado, fim de partida).
+- **Outros jogadores** são bonecos sem IA (`Bot.remote`). Eles se movem pela interpolação dos
+  snapshots, com cerca de 100 ms de atraso, e mostram os tiros com clarão, traçante e som.
+- **Seus tiros** em outro jogador viram um pedido de acerto (`hit`), juntando os chumbos da
+  escopeta num pedido só. O servidor confere e responde com `damage` e `kill`, e só então vida e
+  mortes mudam.
+- **Spike**: quem leva a spike é sorteado entre as pessoas do ataque. Ela cai onde o portador
+  morreu, e qualquer atacante que passar por cima pega. Plantar só vale para o portador (na
+  posição dele); desarmar só vale perto da spike.
+- **Fumaça e granada**: quem lança avisa onde caiu. O servidor confere se a pessoa tem o item,
+  repassa para todos e calcula o dano da granada sozinho.
+- **Servidor**: o mesmo processo serve o jogo e o WebSocket. O cliente conecta em `/ws` no mesmo
+  endereço, ou em `VITE_SERVER_URL` se ela for definida no build.
 
-Os passos 1 a 3 já dão partidas online jogáveis entre amigos.
+## Próximos passos
+
+1. **Bots online**: hoje as vagas abertas ficam fora da rodada. O computador do anfitrião
+   poderia rodar a IA dos bots e enviar os quadros deles.
+2. **Antitrapaça mais forte**: o servidor conferir a linha de tiro com o mapa (o mapa é
+   procedural e roda no Node) e compensar a latência voltando as posições no tempo. Também
+   conferir se a planta foi dentro do local A ou B.
+3. **Reconectar**: voltar para a mesma sala se a conexão cair no meio da partida.

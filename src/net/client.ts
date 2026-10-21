@@ -16,19 +16,29 @@ export class NetClient {
   private frameTimer = 0
   private seq = 0
 
-  /** Open the socket and complete the hello handshake. Rejects on error or protocol mismatch. */
-  connect(url: string, name: string): Promise<string> {
+  /** Open the socket and complete the hello handshake. Rejects on error, timeout or protocol mismatch. */
+  connect(url: string, name: string, timeoutMs = 10000): Promise<string> {
     this.close()
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(url)
       this.ws = ws
+      let done = false
       const fail = (why: string) => {
+        if (done) return
+        done = true
+        globalThis.clearTimeout(timer)
         reject(new Error(why))
         this.close()
       }
+      const timer = globalThis.setTimeout(() => fail('timeout'), timeoutMs)
       ws.onopen = () => this.send({ t: 'hello', v: PROTOCOL_VERSION, name })
       ws.onerror = () => fail('connection_failed')
-      ws.onclose = () => this.emit({ t: 'error', code: 'bad_message', message: 'Conexão encerrada' })
+      ws.onclose = () => {
+        if (!done) return fail('connection_failed')
+        globalThis.clearInterval(this.pingTimer)
+        globalThis.clearInterval(this.frameTimer)
+        this.emit({ t: 'error', code: 'closed', message: 'Conexão encerrada' })
+      }
       ws.onmessage = ev => {
         let msg: ServerMessage
         try {
@@ -37,10 +47,13 @@ export class NetClient {
           return
         }
         if (msg.t === 'welcome') {
+          done = true
+          globalThis.clearTimeout(timer)
           this.id = msg.id
           this.pingTimer = globalThis.setInterval(() => this.send({ t: 'ping', at: Date.now() }), 2000) as unknown as number
           resolve(msg.id)
         } else if (msg.t === 'error' && msg.code === 'version') fail('version')
+        else if (msg.t === 'error' && !done) fail(msg.code)
         else if (msg.t === 'pong') this.rtt = this.rtt ? this.rtt * 0.8 + (Date.now() - msg.at) * 0.2 : Date.now() - msg.at
         this.emit(msg)
       }

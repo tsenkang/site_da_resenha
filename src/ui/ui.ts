@@ -10,8 +10,9 @@ import { GLYPH, TacticalHudView, type BoardRow } from './tacticalHud'
 import type { BuyResult, ShopItem } from '../game/tactical'
 import type { MapRect, Site } from '../game/arena'
 import type { MinimapState } from '../game/tacticalMatch'
+import { OnlineView, type OnlineActions } from './online'
 
-export type Screen = 'boot' | 'title' | 'hud' | 'pause' | 'settings' | 'controls' | 'results'
+export type Screen = 'boot' | 'title' | 'hud' | 'pause' | 'settings' | 'controls' | 'results' | 'online'
 
 export type UiActions = {
   play(mode: GameMode): void
@@ -23,6 +24,7 @@ export type UiActions = {
   /** Tactical shop (null when the shop is not available). */
   buy(item: ShopItem): BuyResult | null
   closeBuy(): void
+  online: OnlineActions
 }
 
 /** Per-frame extras for the tactical HUD. */
@@ -34,7 +36,8 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', html = ''):
   if (html) e.innerHTML = html
   return e
 }
-const icon = (name: string, cls = '') => `<i class="ico ${cls}" style="--ico:url(assets/ui/icon_${name}.webp)"></i>`
+// Absolute URL: a relative url() inside a custom property resolves against the stylesheet (assets/).
+const icon = (name: string, cls = '') => `<i class="ico ${cls}" style="--ico:url(${new URL(`assets/ui/icon_${name}.webp`, document.baseURI).href})"></i>`
 
 const CONTROLS: [string, string][] = [
   ['B', 'Tático: abrir a loja (fase de compra)'],
@@ -98,6 +101,7 @@ export class Ui {
   private tipI = 0
   mode: GameMode = 'onslaught'
   readonly tac: TacticalHudView
+  readonly online: OnlineView
 
   constructor(private readonly t: I18n, private readonly save: SaveStore, private readonly audio: Audio, private readonly actions: UiActions) {
     this.root = document.getElementById('ui')!
@@ -110,6 +114,8 @@ export class Ui {
     this.buildSettings()
     this.buildControls()
     this.buildResults()
+    this.online = new OnlineView(actions.online, (l, f, c, s) => this.button(l, f, c, s), () => this.show('title'))
+    this.add('online', this.online.root)
     this.sparks = new Sparks(this.root)
     window.addEventListener('keydown', e => {
       if (e.code === 'Escape' && (this.screen === 'settings' || this.screen === 'controls')) this.back()
@@ -248,8 +254,7 @@ export class Ui {
       })
       sizes.querySelector('.segs')!.appendChild(b)
     }
-    const online = this.button('ONLINE', () => this.actions.settings({}), 'soon', 'em breve · salas 2v2 a 5v5')
-    online.disabled = true
+    const online = this.button('ONLINE', () => this.show('online'), '', 'jogue com amigos · salas 2v2 a 5v5')
     n.querySelector('.menu')!.append(
       this.button('TÁTICO · SPIKE', () => this.actions.play('tactical'), 'primary tac-play', ''),
       sizes,

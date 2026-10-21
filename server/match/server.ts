@@ -1,11 +1,15 @@
 /**
  * RiftStrike match server: `node server/match/server.ts` (Node ≥ 22.18 runs TypeScript directly).
  *
- * Env: PORT (default 8787), ORIGINS (comma-separated allowed browser origins; empty = any).
- * One WebSocket per player; JSON messages defined in src/net/protocol.ts.
+ * Env: PORT (default 8787), ORIGINS (comma-separated allowed browser origins; empty = any),
+ * STATIC_DIR (built game to serve on the same origin; default `dist` when it exists).
+ * One WebSocket per player; JSON messages defined in src/net/protocol.ts. Serving the game from
+ * the same process lets a single web service (e.g. Render) host both the site and the matches.
  */
 import { randomUUID } from 'node:crypto'
-import { createServer, type Server } from 'node:http'
+import { createReadStream, existsSync, statSync } from 'node:fs'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { extname, join, normalize, resolve, sep } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { roomCode } from '../../src/net/lobby.ts'
 import { parseClientMessage, PROTOCOL_VERSION, type ServerMessage } from '../../src/net/protocol.ts'
@@ -17,12 +21,59 @@ const RATE_LIMIT = 90
 
 export type MatchServer = { http: Server; port: number; rooms: Map<string, Room>; close(): Promise<void> }
 
-export function startMatchServer(port = Number(process.env.PORT ?? 8787), origins = (process.env.ORIGINS ?? '').split(',').filter(Boolean)): Promise<MatchServer> {
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json', '.wasm': 'application/wasm', '.glb': 'model/gltf-binary', '.png': 'image/png',
+  '.webp': 'image/webp', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.mp3': 'audio/mpeg',
+  '.ogg': 'audio/ogg', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.hdr': 'application/octet-stream',
+}
+
+/** Static files from `root`; `/` and unknown extensionless paths fall back to index.html. */
+function serveStatic(root: string, req: IncomingMessage, res: ServerResponse): boolean {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false
+  let path: string
+  try {
+    path = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
+  } catch {
+    return false
+  }
+  let file = normalize(join(root, path))
+  if (file !== root && !file.startsWith(root + sep)) return false
+  if (!existsSync(file) || statSync(file).isDirectory()) {
+    if (extname(path)) return false
+    file = join(root, 'index.html')
+    if (!existsSync(file)) return false
+  }
+  const ext = extname(file)
+  // Hashed bundles never change; everything else revalidates.
+  const immutable = /-[A-Za-z0-9_-]{8}\.(js|css)$/.test(file)
+  res.writeHead(200, {
+    'content-type': MIME[ext] ?? 'application/octet-stream',
+    'content-length': statSync(file).size,
+    'cache-control': immutable ? 'public, max-age=31536000, immutable' : ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+  })
+  if (req.method === 'HEAD') res.end()
+  else createReadStream(file).pipe(res)
+  return true
+}
+
+export function startMatchServer(
+  port = Number(process.env.PORT ?? 8787),
+  origins = (process.env.ORIGINS ?? '').split(',').filter(Boolean),
+  staticDir = process.env.STATIC_DIR ?? (existsSync('dist/index.html') ? 'dist' : ''),
+): Promise<MatchServer> {
   const rooms = new Map<string, Room>()
+  const root = staticDir ? resolve(staticDir) : ''
   const http = createServer((req, res) => {
     // Health check for hosting platforms.
-    res.writeHead(req.url === '/health' ? 200 : 404, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: req.url === '/health', rooms: rooms.size, protocol: PROTOCOL_VERSION }))
+    if (req.url === '/health') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, rooms: rooms.size, protocol: PROTOCOL_VERSION }))
+      return
+    }
+    if (root && serveStatic(root, req, res)) return
+    res.writeHead(404, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: false }))
   })
   const wss = new WebSocketServer({ server: http, maxPayload: 4096, verifyClient: (info: { origin: string }) => !origins.length || origins.includes(info.origin) })
 
@@ -119,5 +170,6 @@ export function startMatchServer(port = Number(process.env.PORT ?? 8787), origin
 // Run directly: `node server/match/server.ts`.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const s = await startMatchServer()
-  console.log(`RiftStrike match server on :${s.port} (protocol v${PROTOCOL_VERSION})`)
+  const site = process.env.STATIC_DIR ?? (existsSync('dist/index.html') ? 'dist' : '')
+  console.log(`RiftStrike match server on :${s.port} (protocol v${PROTOCOL_VERSION})${site ? `, serving ${site}/` : ''}`)
 }

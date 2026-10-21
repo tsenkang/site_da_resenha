@@ -24,7 +24,8 @@ import type { Staged, StageId } from './stages'
 import { tuning } from './tuning'
 import { Arsenal, type HitKind } from './weapons'
 import { TacticalMatch, type MinimapState, type TacticalHud } from './tacticalMatch'
-import type { TeamIndex, TeamSize } from './tactical'
+import type { LoadoutWeapon, TeamIndex, TeamSize } from './tactical'
+import type { NetLink } from '../net/link'
 
 export type Mode = 'attract' | 'countdown' | 'playing' | 'paused' | 'ended'
 export type GameMode = 'onslaught' | 'deathmatch' | 'tactical'
@@ -385,6 +386,7 @@ export class Game implements CombatWorld {
         hit: (kind, damage) => this.events.hitmarker(kind, damage),
         fired: (_id, shake) => {
           this.trauma = Math.min(1, this.trauma + shake)
+          this.netShots += 1
         },
         message: key => this.events.message(key === 'msg.noAmmo' ? 'SEM MUNIÇÃO' : key, 'warn'),
       },
@@ -445,6 +447,77 @@ export class Game implements CombatWorld {
     b.team = team
     b.hide()
     return b
+  }
+
+  // ─── online (tactical over the network) ──────────────────────────────
+  private netShots = 0
+  /** Hits on remote players this step, merged per target (shotgun pellets become one claim). */
+  private readonly netHits = new Map<number, { damage: number; headshot: boolean; distance: number; weapon: LoadoutWeapon }>()
+
+  /** Weapon in hand as the rules know it (the launcher never appears in tactical). */
+  heldLoadoutWeapon(): LoadoutWeapon {
+    const c = this.arsenal.current
+    return c === 'rifle' || c === 'shotgun' ? c : 'pistol'
+  }
+
+  takeNetShots(): number {
+    const n = this.netShots
+    this.netShots = 0
+    return Math.min(20, n)
+  }
+
+  /** Send this step's hit claims; the server validates them and answers with damage/kill. */
+  flushNetHits(net: NetLink): void {
+    for (const [local, h] of this.netHits) {
+      const target = net.net(local)
+      if (target) net.client.send({ t: 'hit', h: { target, damage: Math.round(h.damage), headshot: h.headshot, weapon: h.weapon, distance: Math.round(h.distance * 10) / 10 } })
+    }
+    this.netHits.clear()
+  }
+
+  /** Server damage report: sync health/shield and play the hurt feedback when it is you. */
+  netDamage(target: number, by: number, hp: number, shield: number): void {
+    if (target !== 0) {
+      const b = this.botById.get(target)
+      if (b?.alive) {
+        b.health = hp
+        b.armor = shield
+      }
+      return
+    }
+    if (!this.player.alive) return
+    const dealt = this.player.health - hp + Math.max(0, this.player.armor - shield)
+    const hadArmor = this.player.armor > 0
+    this.player.health = hp
+    this.player.armor = shield
+    if (dealt <= 0) return
+    const from = by === 0 ? this.player.position : this.botById.get(by)?.pos ?? this.player.position
+    this.events.damage(Math.atan2(-(from.x - this.player.position.x), -(from.z - this.player.position.z)) - this.player.yaw, dealt)
+    this.renderer.fx.damage = Math.min(1, this.renderer.fx.damage + dealt / 40)
+    this.trauma = Math.min(1, this.trauma + dealt / 90)
+    this.arsenal.punch.pitch += 0.012 * Math.min(2, dealt / 10)
+    if (this.hurtT <= 0) {
+      this.audio.play('player_hurt', { volume: 0.75 })
+      this.hurtT = 0.45
+    }
+    if (hadArmor && shield <= 0) this.audio.play('armor_break', { volume: 0.8 })
+  }
+
+  /** Server kill report: the usual death presentation, killfeed and stats. */
+  netKill(killer: number, victim: number, headshot: boolean, source: DamageSource): void {
+    const from = (killer === 0 ? this.player.position : this.botById.get(killer)?.pos ?? this.player.position).clone()
+    const info: DamageInfo = { attacker: killer === victim ? -1 : killer, amount: 999, source, from, headshot }
+    if (victim === 0) {
+      if (!this.player.alive) return
+      this.player.health = 0
+      this.playerDied(info)
+      return
+    }
+    const b = this.botById.get(victim)
+    if (!b?.alive) return
+    b.health = 0
+    b.alive = false
+    this.botDied(b, info)
   }
 
   setGrenades(n: number): void {
@@ -729,6 +802,15 @@ export class Game implements CombatWorld {
     }
     const bot = this.botById.get(target)
     if (!bot || !bot.alive) return { dealt: 0, killed: false, armor: false }
+    if (bot.remote) {
+      // Online: our shots become claims for the server (explosions are resolved there).
+      if (info.attacker !== 0 || info.splash) return { dealt: 0, killed: false, armor: false }
+      const h = this.netHits.get(target) ?? { damage: 0, headshot: false, distance: this.player.position.distanceTo(bot.pos), weapon: this.heldLoadoutWeapon() }
+      h.damage += info.amount
+      h.headshot ||= !!info.headshot
+      this.netHits.set(target, h)
+      return { dealt: info.amount, killed: false, armor: bot.armor > 0 }
+    }
     if (info.attacker === 0 && !this.tactical) info = { ...info, amount: info.amount * CONFIG.player.damageScale }
     const r = bot.takeDamage(info)
     if (info.attacker === 0 && this.mode === 'playing' && !this.onslaught) this.match = recordShot(this.match, 0, 0, r.dealt)
@@ -924,7 +1006,8 @@ export class Game implements CombatWorld {
     this.endOverdrive(true)
   }
 
-  start(mode: GameMode = this.gameMode): void {
+  /** `net`: play the tactical mode online, with the server as the authority. */
+  start(mode: GameMode = this.gameMode, net: NetLink | null = null): void {
     tuning.activate('run')
     this.audio.restoreWorld()
     this.audio.setPaused(false)
@@ -958,7 +1041,7 @@ export class Game implements CombatWorld {
     this.lastKillWeapons = []
     this.grenades = 2
     if (tac) {
-      this.tactical = new TacticalMatch(this, this.teamSize)
+      this.tactical = new TacticalMatch(this, net ? net.state.cfg.teamSize : this.teamSize, net)
       // Compile the tactical bots, outlines, spike and smoke now (buy phase) instead of on first sight.
       this.prewarm()
     } else if (mode === 'onslaught') {
@@ -1619,7 +1702,8 @@ export class Game implements CombatWorld {
       const list = tac.bots
       for (const b of list) {
         if (!b.alive) continue
-        b.update(dt, ctx, list)
+        // Remote players are posed by the director from network frames.
+        if (!b.remote) b.update(dt, ctx, list)
         this.botFootsteps(b, dt)
       }
     }
@@ -1785,7 +1869,10 @@ export class Game implements CombatWorld {
       if (led) led.visible = blink
       if (blink) this.fx.add.emit({ pos: g.pos.clone(), life: 0.05, size: 0.18, color: [4, 0.4, 0.2, 1], frame: 213 })
       if (g.fuse <= 0) {
-        this.explode(g.pos.clone(), 5.2 * blast, 125, 0, 'grenade', UP)
+        const net = this.tactical?.net
+        // Online the server deals the blast damage; here it is only the explosion.
+        net?.client.send({ t: 'grenade', at: [g.pos.x, g.pos.y, g.pos.z] })
+        this.explode(g.pos.clone(), 5.2 * blast, net ? 0 : 125, 0, 'grenade', UP)
         this.scene.remove(g.mesh)
         this.grenadesLive.splice(i, 1)
       }

@@ -11,8 +11,10 @@ Feito com Three.js (gráficos) e Rapier (física).
   na fase de compra.
 - **Um mapa por modo**: Tático na Base Aurora (dia), Mata-mata no Mercado (pôr do sol, praça
   compacta) e Sobrevivência na Fortaleza (noite, pátio com janelas e postes acesos).
-- **Base do online pronta**: protocolo, salas de 2v2 a 5v5 e servidor com autoridade. Veja
-  [docs/ONLINE.md](docs/ONLINE.md).
+- **Online com amigos (2v2 a 5v5)**: no menu ONLINE, crie uma sala, mande o convite e jogue o
+  modo tático com o servidor como autoridade. Veja [docs/ONLINE.md](docs/ONLINE.md).
+- **Pronto para o Render**: um serviço só serve o jogo e as partidas (`render.yaml`). Veja
+  [docs/DEPLOY_RENDER.md](docs/DEPLOY_RENDER.md).
 
 ## Rodar
 
@@ -22,7 +24,9 @@ pnpm dev          # abre em http://localhost:3000
 pnpm build        # gera a versão final em dist/ (site estático)
 pnpm test         # testes de regras, economia, lobby e servidor
 pnpm smoke        # depois do build: abre o jogo num navegador sem tela e joga os 3 modos
-pnpm server       # servidor online (ws://localhost:8787), veja docs/ONLINE.md
+pnpm smoke:online # depois do build: dois navegadores jogam uma rodada online entre si
+pnpm server       # servidor online (ws://localhost:8787); com o pnpm dev, o ONLINE já funciona
+pnpm start        # depois do build: jogo + online em http://localhost:8787 (igual ao Render)
 ```
 
 O `pnpm smoke` precisa do Chromium do Playwright. Se ele já estiver instalado em outro lugar,
@@ -70,7 +74,9 @@ use `CHROMIUM_PATH=/caminho/do/chromium pnpm smoke`.
 | `src/game/config.ts` | armas (perfil arcade e perfil tático) e ajustes gerais |
 | `src/ui/tacticalHud.ts` | HUD tático: placar, minimapa, loja, placar do Tab |
 | `src/engine/renderer.ts` | qualidade gráfica, resolução dinâmica, caminho sem pós-processamento |
-| `src/net/*`, `server/match/*` | base do modo online |
+| `src/net/*`, `server/match/*` | modo online: protocolo, salas, servidor (que também serve o jogo) |
+| `src/ui/online.ts` | tela ONLINE: criar/entrar em sala, times, pronto, começar |
+| `render.yaml` | configuração do deploy no Render |
 | `tests/` | testes (regras táticas, rede, salvamento, ondas) |
 
 ## Créditos

@@ -666,3 +666,41 @@ html, body { background: #0f1923; }
 .stat.big b { text-shadow: none; font-family: var(--title); font-weight: 400; font-size: 54px; }
 .fps { position: fixed; top: 8px; right: 10px; z-index: 60; padding: 3px 8px; background: rgba(15, 25, 35, 0.75); font: 700 12px var(--display); letter-spacing: 0.1em; color: #5cf2d3; pointer-events: none; }
 body[data-mode='tactical'] .fps { top: auto; bottom: 8px; right: 10px; }
+
+/* ─── online lobby ─────────────────────────────────────────────────── */
+.online { width: min(760px, calc(100vw - 32px)); max-height: 94vh; overflow: auto; }
+.online .btn[hidden] { display: none; }
+.online.busy, .busy .online { opacity: 0.75; pointer-events: none; }
+.ol-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; font: 700 11px var(--display); letter-spacing: 0.22em; color: var(--dim); }
+.online input:not([type]) , .online .ol-name, .online .ol-code-in { pointer-events: auto; padding: 10px 12px; border: 1px solid var(--line); background: rgba(236, 232, 225, 0.06); color: var(--text); font: 700 18px var(--display); letter-spacing: 0.08em; outline: none; }
+.online .ol-name:focus, .online .ol-code-in:focus { border-color: var(--amber); }
+.ol-code-in { width: 140px; text-transform: uppercase; letter-spacing: 0.3em !important; }
+.ol-block { margin-bottom: 16px; }
+.ol-title { margin-bottom: 8px; font: 700 11px var(--display); letter-spacing: 0.22em; color: var(--dim); }
+.ol-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ol-row .btn { min-width: 150px; justify-content: center; }
+.ol-sizes { display: flex; gap: 6px; }
+.ol-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; font: 700 14px var(--display); letter-spacing: 0.18em; color: var(--dim); }
+.ol-code { font: 400 34px var(--title); letter-spacing: 0.18em; color: var(--text); }
+.ol-size { margin-left: 8px; letter-spacing: 0.1em; }
+.ol-teams { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 640px) { .ol-teams { grid-template-columns: 1fr; } }
+.ol-team { padding: 12px; background: rgba(236, 232, 225, 0.04); box-shadow: inset 0 0 0 1px var(--line); }
+.ol-team.t0 { box-shadow: inset 3px 0 0 #3ce0c4, inset 0 0 0 1px var(--line); }
+.ol-team.t1 { box-shadow: inset 3px 0 0 #ff4655, inset 0 0 0 1px var(--line); }
+.ol-team h3 { margin: 0 0 8px; font: 700 14px var(--display); letter-spacing: 0.2em; color: var(--text); }
+.ol-team h3 small { margin-left: 6px; color: var(--dim); letter-spacing: 0.08em; font-weight: 500; }
+.ol-team ul { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ol-team li { display: flex; justify-content: space-between; gap: 8px; padding: 7px 10px; background: rgba(15, 25, 35, 0.6); font: 700 14px var(--display); letter-spacing: 0.06em; color: var(--text); }
+.ol-team li.me { background: rgba(60, 224, 196, 0.16); }
+.ol-team li.open { color: var(--dim); font-weight: 500; font-style: italic; }
+.ol-team li em { font-style: normal; font-size: 10px; color: var(--amber); letter-spacing: 0.14em; }
+.ol-team li b { font-size: 11px; letter-spacing: 0.14em; color: var(--dim); }
+.ol-team li b.ok { color: #5cf2d3; }
+.ol-team .btn { width: 100%; justify-content: center; min-width: 0; }
+.ol-check { display: flex; align-items: center; gap: 10px; margin: 14px 0; font: 500 13px var(--display); color: var(--dim); pointer-events: auto; }
+.ol-check input { pointer-events: auto; width: 18px; height: 18px; accent-color: var(--amber); }
+.ol-actions { justify-content: flex-end; }
+.ol-status { min-height: 20px; margin-top: 14px; font: 500 14px var(--display); color: var(--dim); overflow-wrap: anywhere; }
+.ol-status[data-kind='warn'] { color: #ffb648; }
+.ol-status[data-kind='good'] { color: #5cf2d3; }

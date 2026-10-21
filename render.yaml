@@ -1,0 +1,21 @@
+# Render Blueprint: one web service serves the game (dist/) and the online match server (WebSocket).
+# New → Blueprint on render.com, pick this repository, done. See docs/DEPLOY_RENDER.md.
+services:
+  - type: web
+    name: riftstrike
+    runtime: node
+    plan: free
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm run build:web
+    startCommand: pnpm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Node 22.18+ runs the TypeScript server directly.
+      - key: NODE_VERSION
+        value: "22"
+      # Render's own npm install step is skipped; the build command installs with pnpm.
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      # Playwright is only for local tests: never download browsers on the server.
+      - key: PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+        value: "1"

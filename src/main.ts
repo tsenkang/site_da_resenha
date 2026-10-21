@@ -6,6 +6,9 @@ import { GameLoop } from './engine/loop'
 import { SAVE_KEY, SaveStore, type SaveData } from './engine/save'
 import type { Game, GameMode } from './game/game'
 import { Ui } from './ui/ui'
+import { NetClient } from './net/client'
+import { NetLink } from './net/link'
+import { isRoomCode } from './net/protocol'
 import { createLeaderboardClient, type LeaderboardClient, type Result, type RunTicket } from '../leaderboard.js'
 
 /**
@@ -71,12 +74,23 @@ async function boot(): Promise<void> {
   const pause = () => {
     if (ui.tac.buyOpen) return closeBuy()
     if (game?.mode !== 'playing' && game?.mode !== 'countdown') return
+    // Online the match keeps running for everyone: the menu opens over the live game.
+    if (onlineMatch) {
+      if (ui.screen === 'hud') ui.show('pause')
+      input.unlockPointer()
+      return
+    }
     if (game.choosingPerk) return
     game.pause()
     ui.show('pause')
     input.unlockPointer()
   }
   const resume = () => {
+    if (onlineMatch && ui.screen === 'pause') {
+      ui.show('hud')
+      if (game?.mode === 'playing') input.lockPointer()
+      return
+    }
     if (game?.mode !== 'paused') return
     game.resume()
     ui.show('hud')
@@ -88,11 +102,95 @@ async function boot(): Promise<void> {
     game.choosePerk(i)
     if (game.mode === 'playing') input.lockPointer()
   }
+  // ─── online ───────────────────────────────────────────────────────────
+  // The match server normally lives on the same origin (one Render web service serves both);
+  // VITE_SERVER_URL points the client at a separate server instead.
+  const serverUrl = (): string => {
+    const env = import.meta.env.VITE_SERVER_URL as string | undefined
+    if (env) return env
+    return `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+  }
+  let net: NetClient | null = null
+  let netMe = ''
+  let netStart: { you: string; roster: string[] } | null = null
+  let onlineMatch = false
+  let ids = { ally0: 201, enemy0: 211 }
+  const disconnect = () => {
+    if (net) {
+      net.send({ t: 'leave' })
+      net.close()
+    }
+    net = null
+    netStart = null
+  }
+  /** Leave the online match (results screen or quit) and go back to the online menu or the title. */
+  const endOnline = (to: 'online' | 'title') => {
+    onlineMatch = false
+    disconnect()
+    game?.toTitle()
+    ui.resetHud()
+    ui.online.reset()
+    ui.show(to)
+    input.unlockPointer()
+  }
+  const connectionLost = () => {
+    net = null
+    netStart = null
+    if (onlineMatch) endOnline('online')
+    else ui.online.reset()
+    ui.online.status('A conexão com o servidor caiu. Tente de novo.', 'warn')
+  }
+  const startOnline = (link: NetLink) => {
+    if (!game) return
+    onlineMatch = true
+    closeBuy(false)
+    audio.unlock()
+    audio.retryMusic()
+    ui.resetHud()
+    rankedRun = null
+    game.start('tactical', link)
+    ui.show('hud')
+    loop.resetAccumulator()
+    input.lockPointer()
+  }
+  const connect = async (name: string): Promise<NetClient | null> => {
+    if (net?.connected) return net
+    const c = new NetClient()
+    ui.online.setBusy(true, 'Conectando ao servidor…')
+    try {
+      netMe = await c.connect(serverUrl(), name)
+    } catch (e) {
+      ui.online.setBusy(false)
+      const why = (e as Error).message
+      ui.online.status(why === 'version' ? 'Seu jogo está desatualizado: recarregue a página.' : 'Não foi possível conectar ao servidor online neste endereço.', 'warn')
+      return null
+    }
+    net = c
+    c.on('lobby', m => {
+      if (!onlineMatch) ui.online.showLobby(m.lobby, netMe)
+    })
+    c.on('error', m => {
+      if (m.code === 'closed') return connectionLost()
+      ui.online.setBusy(false)
+      ui.online.status(m.message, 'warn')
+    })
+    c.on('matchStart', m => {
+      netStart = { you: m.you, roster: m.roster }
+    })
+    // The first full state after matchStart starts the match; later ones go to the director.
+    c.on('state', m => {
+      if (!netStart || onlineMatch || !game) return
+      startOnline(new NetLink(c, netStart, m, ids.ally0, ids.enemy0))
+    })
+    return c
+  }
+
   const ui = new Ui(i18n, save, audio, {
     play: mode => startMatch(mode),
-    restart: () => startMatch(),
+    restart: () => (onlineMatch ? endOnline('online') : startMatch()),
     resume,
     quit: () => {
+      if (onlineMatch) return endOnline('title')
       game?.toTitle()
       ui.resetHud()
       ui.show('title')
@@ -110,8 +208,20 @@ async function boot(): Promise<void> {
     pickPerk,
     buy: item => (game?.tactical?.canBuy ? game.tactical.buy(item) : null),
     closeBuy: () => closeBuy(),
+    online: {
+      create: (name, teamSize) => void connect(name).then(c => c?.send({ t: 'create', teamSize })),
+      join: (name, code) => void connect(name).then(c => c?.send({ t: 'join', code })),
+      team: team => net?.send({ t: 'team', team }),
+      ready: ready => net?.send({ t: 'ready', ready }),
+      fillBots: on => net?.send({ t: 'fillBots', on }),
+      start: () => net?.send({ t: 'start' }),
+      leave: disconnect,
+    },
   })
   ui.show('boot')
+  // Invite links (?sala=ABCDE) open the online screen with the code filled in.
+  const invite = new URLSearchParams(location.search).get('sala')?.toUpperCase() ?? ''
+  if (isRoomCode(invite)) ui.online.prefill(invite)
   applySettings(save.data)
   // Keep the spark layer and loading tips alive while the heavy modules download.
   let bootRaf = 0
@@ -126,15 +236,17 @@ async function boot(): Promise<void> {
   const parts = { code: 0, library: 0, stage: 0 }
   const progress = (label?: string) => ui.setBootProgress(0.04 + parts.code * 0.16 + parts.library * 0.5 + parts.stage * 0.3, label)
   progress('INITIALISING RIFT')
-  const [{ Game }, { Renderer, suggestQuality }, physics, { Assets }, { loadLibrary }, { StageLoader }] = await Promise.all([
+  const [{ Game }, { Renderer, suggestQuality }, physics, { Assets }, { loadLibrary }, { StageLoader }, { ALLY_ID0, ENEMY_ID0 }] = await Promise.all([
     import('./game/game'),
     import('./engine/renderer'),
     import('./engine/physics'),
     import('./engine/assets'),
     import('./game/library'),
     import('./game/stages'),
+    import('./game/tacticalMatch'),
     document.fonts.ready,
   ])
+  ids = { ally0: ALLY_ID0, enemy0: ENEMY_ID0 }
   await physics.initPhysics()
   parts.code = 1
   progress('BUILDING ARENA')
@@ -218,8 +330,8 @@ async function boot(): Promise<void> {
         else openBuy()
       }
       if (input.consume('pause') && performance.now() - lockLostAt > 300) {
-        if (g.mode === 'playing' || g.mode === 'countdown') pause()
-        else if (g.mode === 'paused' && ui.screen === 'pause') resume()
+        if ((g.mode === 'playing' || g.mode === 'countdown') && ui.screen !== 'pause') pause()
+        else if ((g.mode === 'paused' || onlineMatch) && ui.screen === 'pause') resume()
       }
       // Keyboard perk selection (1–3) while the perk cards are up.
       if (g.choosingPerk) {
@@ -263,7 +375,7 @@ async function boot(): Promise<void> {
   window.addEventListener('pointerdown', gesture)
   window.addEventListener('keydown', gesture)
   window.setTimeout(() => {
-    ui.show('title')
+    ui.show(isRoomCode(invite) ? 'online' : 'title')
     document.getElementById('boot-ph')?.remove()
     audio.playMusic('title', 1.5)
     // Background streaming starts once the title is up.
