@@ -197,3 +197,56 @@ describe('server hosts the game files', () => {
     expect(await (await fetch(`${base}/health`)).json()).toMatchObject({ ok: true })
   })
 })
+
+describe('online map choice', () => {
+  it('lets only the host pick a valid map before the start, and sends it with matchStart', async () => {
+    const { ONLINE_MAPS, parseClientMessage } = await import('../src/net/protocol')
+    expect(parseClientMessage(JSON.stringify({ t: 'map', map: 'kyoto' }))).toEqual({ t: 'map', map: 'kyoto' })
+    expect(parseClientMessage(JSON.stringify({ t: 'map', map: 'atlantis' }))).toBeNull()
+    expect(ONLINE_MAPS.length).toBeGreaterThanOrEqual(7)
+    const a = fakeConn('a')
+    const b = fakeConn('b')
+    const room = new Room('ROOMM', 2, a)
+    room.join(b)
+    expect(last(a, 'lobby')!.lobby.map).toBe('aurora')
+    room.handle('b', { t: 'map', map: 'veneza' })
+    expect(room.lobby.map).toBe('aurora')
+    expect(last(b, 'error')).toMatchObject({ code: 'not_host' })
+    room.handle('a', { t: 'map', map: 'veneza' })
+    expect(last(b, 'lobby')!.lobby.map).toBe('veneza')
+    room.handle('b', { t: 'ready', ready: true })
+    room.handle('a', { t: 'start' })
+    expect(last(b, 'matchStart')).toMatchObject({ map: 'veneza' })
+    room.handle('a', { t: 'map', map: 'kyoto' })
+    expect(room.lobby.map).toBe('veneza')
+  })
+
+  it('every online map is a tactical map with A/B sites, barriers and spawns', async () => {
+    const { ONLINE_MAPS } = await import('../src/net/protocol')
+    const { MAPS, MAP_ORIGIN } = await import('../src/game/maps')
+    const origins = new Set<string>()
+    for (const id of ONLINE_MAPS) {
+      const m = MAPS[id]
+      expect(m.id).toBe(id)
+      expect(m.sites).not.toBeNull()
+      expect(m.barriers).not.toBeNull()
+      origins.add(MAP_ORIGIN[id].join(','))
+      // Sites sit inside the walls and clear of every building footprint.
+      const [hx, hz] = m.sites!.half ?? [9.5, 8.5]
+      for (const [sx, sz] of [m.sites!.a, m.sites!.b]) {
+        expect(Math.abs(sx) + hx).toBeLessThan(m.halfX)
+        expect(Math.abs(sz) + hz).toBeLessThan(m.halfZ)
+        for (const [x0, x1, z0, z1] of m.buildings) {
+          const overlap = sx + hx > x0 && sx - hx < x1 && sz + hz > z0 && sz - hz < z1
+          expect(overlap, `${id}: site at ${sx},${sz} overlaps building ${x0},${x1},${z0},${z1}`).toBe(false)
+        }
+      }
+      // Spawn yards stay open (team spawns are at x ≈ ±5 design units).
+      for (const [x0, x1, z0, z1] of m.buildings) {
+        const inYard = (z: number) => x1 > -10 && x0 < 10 && z1 > z - 4 && z0 < z + 4
+        expect(inYard(m.teamSpawnZ[0]) || inYard(m.teamSpawnZ[1]), `${id}: building in a spawn yard`).toBe(false)
+      }
+    }
+    expect(origins.size).toBe(ONLINE_MAPS.length)
+  })
+})

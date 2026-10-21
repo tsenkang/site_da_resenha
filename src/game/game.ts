@@ -664,6 +664,11 @@ export class Game implements CombatWorld {
     return items
   }
 
+  /** Minimap extents and world offset of the active map. */
+  minimapFrame(): { hx: number; hz: number; ox: number; oz: number } {
+    return { hx: this.arena.HX, hz: this.arena.HZ, ox: this.arena.origin.x, oz: this.arena.origin.z }
+  }
+
   /** Switch the world to a map: show it (sky, fog, light), swap props/pickups and re-point bot navigation. */
   useMap(id: MapId): void {
     if (this.arena.def.id === id) return
@@ -1014,7 +1019,7 @@ export class Game implements CombatWorld {
     this.audio.setPaused(false)
     this.tactical?.dispose()
     this.tactical = null
-    this.useMap(MODE_MAP[mode])
+    this.useMap(net ? net.map : MODE_MAP[mode])
     this.clearWorld()
     this.gameMode = mode
     const tac = mode === 'tactical'
@@ -1872,7 +1877,7 @@ export class Game implements CombatWorld {
       if (g.fuse <= 0) {
         const net = this.tactical?.net
         // Online the server deals the blast damage; here it is only the explosion.
-        net?.client.send({ t: 'grenade', at: [g.pos.x, g.pos.y, g.pos.z] })
+        if (net) net.client.send({ t: 'grenade', at: this.tactical!.toNet(g.pos) })
         this.explode(g.pos.clone(), 5.2 * blast, net ? 0 : 125, 0, 'grenade', UP)
         this.scene.remove(g.mesh)
         this.grenadesLive.splice(i, 1)

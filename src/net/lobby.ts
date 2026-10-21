@@ -3,16 +3,16 @@
  * ready checks, host migration and bot fill, for team sizes 2v2 … 5v5.
  */
 import type { TeamIndex, TeamSize } from '../game/tactical.ts'
-import type { LobbyView } from './protocol.ts'
+import type { LobbyView, OnlineMapId } from './protocol.ts'
 
 export type LobbyMember = { id: string; name: string; team: TeamIndex; ready: boolean; bot: boolean }
-export type Lobby = { code: string; teamSize: TeamSize; hostId: string; members: LobbyMember[]; fillBots: boolean; started: boolean }
+export type Lobby = { code: string; teamSize: TeamSize; hostId: string; members: LobbyMember[]; fillBots: boolean; started: boolean; map: OnlineMapId }
 export type LobbyResult = { ok: true; lobby: Lobby } | { ok: false; reason: 'room_full' | 'in_match' | 'not_host' | 'not_ready' | 'team_full' | 'unknown' }
 
 export const BOT_NAMES = ['FAÍSCA', 'NÉVOA', 'TRAVA', 'BRISA', 'CORVO', 'LÂMINA', 'PRISMA', 'ÔNIX', 'VULTO', 'RAIO']
 
-export function createLobby(code: string, teamSize: TeamSize, host: { id: string; name: string }): Lobby {
-  return { code, teamSize, hostId: host.id, members: [{ id: host.id, name: host.name, team: 0, ready: true, bot: false }], fillBots: true, started: false }
+export function createLobby(code: string, teamSize: TeamSize, host: { id: string; name: string }, map: OnlineMapId = 'aurora'): Lobby {
+  return { code, teamSize, hostId: host.id, members: [{ id: host.id, name: host.name, team: 0, ready: true, bot: false }], fillBots: true, started: false, map }
 }
 
 const count = (l: Lobby, team: TeamIndex) => l.members.filter(m => m.team === team).length
@@ -52,6 +52,13 @@ export function setFillBots(l: Lobby, by: string, on: boolean): LobbyResult {
   return { ok: true, lobby: { ...l, fillBots: on } }
 }
 
+/** Host picks the map while the room is still in the lobby. */
+export function setMap(l: Lobby, by: string, map: OnlineMapId): LobbyResult {
+  if (l.started) return { ok: false, reason: 'in_match' }
+  if (by !== l.hostId) return { ok: false, reason: 'not_host' }
+  return { ok: true, lobby: { ...l, map } }
+}
+
 /** Host starts when every human is ready, each team has someone, and teams are full or slots may stay open. */
 export function canStart(l: Lobby, by: string): LobbyResult {
   if (l.started) return { ok: false, reason: 'in_match' }
@@ -82,6 +89,7 @@ export function lobbyView(l: Lobby): LobbyView {
     teamSize: l.teamSize,
     fillBots: l.fillBots,
     started: l.started,
+    map: l.map,
     players: l.members.map(m => ({ id: m.id, name: m.name, team: m.team, ready: m.ready, host: m.id === l.hostId, bot: m.bot })),
   }
 }

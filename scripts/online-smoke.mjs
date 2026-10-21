@@ -53,18 +53,26 @@ try {
   await b.waitForFunction(() => !document.querySelector('.ol-lobby').hidden, null, { timeout: 15000 })
   await b.click('.ol-ready-btn')
   await a.waitForFunction(() => !document.querySelector('.ol-start-btn').disabled, null, { timeout: 15000 })
+  // The host picks the map; the guest's lobby follows.
+  await a.click('.ol-map.map-kyoto')
+  await b.waitForFunction(() => document.querySelector('.ol-map.on')?.classList.contains('map-kyoto'), null, { timeout: 10000 })
   await a.click('.ol-start-btn')
-  for (const p of [a, b]) await p.waitForFunction(() => window.__game.game.tactical?.net && document.body.dataset.screen === 'hud', null, { timeout: 30000 })
+  for (const p of [a, b]) await p.waitForFunction(() => window.__game.game.tactical?.net && document.body.dataset.screen === 'hud', null, { timeout: 60000 })
+  for (const p of [a, b]) if ((await p.evaluate(() => window.__game.game.arena.def.id)) !== 'kyoto') fail('map choice did not reach both players')
   // B moves; A must see the avatar follow.
   const z0 = (await info(a)).enemies[0]?.z
   if (z0 === undefined) fail('A does not see B')
-  await b.evaluate(() => {
-    const p = window.__game.game.player
-    const to = { x: p.position.x, y: p.position.y + 0.9, z: p.position.z + 3 }
-    p.body.setTranslation(to, true)
-    p.body.setNextKinematicTranslation(to)
-    p.position.z += 3
-  })
+  // Walk-speed steps (the server rejects teleports outside the buy phase).
+  for (let i = 0; i < 10; i += 1) {
+    await b.evaluate(() => {
+      const p = window.__game.game.player
+      const to = { x: p.position.x, y: p.position.y + 0.9, z: p.position.z + 0.3 }
+      p.body.setTranslation(to, true)
+      p.body.setNextKinematicTranslation(to)
+      p.position.z += 0.3
+    })
+    await b.waitForTimeout(90)
+  }
   await a.waitForFunction(z => Math.abs(window.__game.game.tactical.enemies.find(e => e.alive).pos.z - z) > 1, z0, { timeout: 15000 }).catch(() => {})
   const z1 = (await info(a)).enemies[0].z
   if (Math.abs(z1 - z0) < 0.5) fail(`B's movement did not replicate (${z0} → ${z1})`)
@@ -85,7 +93,7 @@ try {
   if (rb.alive) fail('B survived the validated hits')
   if (ra.score[0] !== 1 || rb.score[1] !== 1) fail(`unexpected score A ${ra.score} B ${rb.score}`)
   if (errors.length) fail(errors.slice(0, 5).join('; '))
-  console.log(`online smoke: OK — room ${code}, movement ${z0.toFixed(1)} → ${z1.toFixed(1)}, round won ${ra.score.join('-')}`)
+  console.log(`online smoke: OK — room ${code}, map kyoto, movement ${z0.toFixed(1)} → ${z1.toFixed(1)}, round won ${ra.score.join('-')}`)
 } catch (e) {
   fail(String(e))
 }

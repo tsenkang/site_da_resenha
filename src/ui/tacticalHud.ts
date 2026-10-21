@@ -1,5 +1,8 @@
 import type { Audio } from '../engine/audio'
 import { HALF_X, HALF_Z, type MapRect, type Site } from '../game/arena'
+
+/** Size and world offset of the map shown on the minimap (rects are map-local, positions world). */
+export type MinimapFrame = { hx: number; hz: number; ox: number; oz: number }
 import { SHOP, type BuyResult, type Loadout, type ShopItem } from '../game/tactical'
 import type { MinimapState, TacticalHud as HudData } from '../game/tacticalMatch'
 
@@ -98,15 +101,26 @@ export class TacticalHudView {
   }
 
   // ─── minimap ──────────────────────────────────────────────────────────
-  setMap(rects: MapRect[], sites: Site[]): void {
+  private frame: MinimapFrame = { hx: HALF_X, hz: HALF_Z, ox: 0, oz: 0 }
+
+  setMap(rects: MapRect[], sites: Site[], frame?: MinimapFrame): void {
     this.rects = rects
     this.sites = sites
+    if (frame) this.frame = frame
     this.mapBase = undefined
   }
 
-  private toMap(x: number, z: number): [number, number] {
+  /** Map-local metres → minimap pixels. */
+  private toLocal(x: number, z: number): [number, number] {
     const S = this.mapCanvas.width
-    return [((x + HALF_X + 2) / (HALF_X * 2 + 4)) * S, ((z + HALF_Z + 2) / (HALF_Z * 2 + 4)) * S]
+    const { hx, hz } = this.frame
+    const half = Math.max(hx, hz)
+    return [((x + half + 2) / (half * 2 + 4)) * S, ((z + half + 2) / (half * 2 + 4)) * S]
+  }
+
+  /** World position → minimap pixels. */
+  private toMap(x: number, z: number): [number, number] {
+    return this.toLocal(x - this.frame.ox, z - this.frame.oz)
   }
 
   private buildMapBase(): HTMLCanvasElement {
@@ -116,8 +130,8 @@ export class TacticalHudView {
     const g = c.getContext('2d')!
     g.fillStyle = 'rgba(16, 24, 33, 0.82)'
     g.fillRect(0, 0, S, S)
-    const [fx0, fz0] = this.toMap(-HALF_X, -HALF_Z)
-    const [fx1, fz1] = this.toMap(HALF_X, HALF_Z)
+    const [fx0, fz0] = this.toLocal(-this.frame.hx, -this.frame.hz)
+    const [fx1, fz1] = this.toLocal(this.frame.hx, this.frame.hz)
     g.fillStyle = 'rgba(200, 214, 222, 0.30)'
     g.fillRect(fx0, fz0, fx1 - fx0, fz1 - fz0)
     for (const s of this.sites) {
@@ -132,9 +146,9 @@ export class TacticalHudView {
       g.fillText(s.id, (x0 + x1) / 2, (z0 + z1) / 2)
     }
     for (const r of this.rects) {
-      const [x0, z0] = this.toMap(r.x0, r.z0)
-      const [x1, z1] = this.toMap(r.x1, r.z1)
-      g.fillStyle = r.kind === 'cover' ? 'rgba(10, 16, 22, 0.75)' : 'rgba(10, 16, 22, 0.95)'
+      const [x0, z0] = this.toLocal(r.x0, r.z0)
+      const [x1, z1] = this.toLocal(r.x1, r.z1)
+      g.fillStyle = r.kind === 'water' ? 'rgba(60, 150, 200, 0.7)' : r.kind === 'cover' ? 'rgba(10, 16, 22, 0.75)' : 'rgba(10, 16, 22, 0.95)'
       g.fillRect(x0, z0, x1 - x0, z1 - z0)
     }
     return c

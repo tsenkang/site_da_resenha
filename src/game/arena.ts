@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { RAPIER, type Physics } from '../engine/physics'
 import { worldBox, type Library } from './library'
 import { BLOCKED, NavGrid } from './nav'
-import { MAPS, type MapDef } from './maps'
+import { MAPS, type MapDef, type MapStyle, type PropKind } from './maps'
 
 /**
  * "Base Aurora": a sunny two-site tactical map in a painted, low-poly Mediterranean style.
@@ -39,7 +39,7 @@ export type SiteId = 'A' | 'B'
 /** Axis-aligned plant zone. */
 export type Site = { id: SiteId; center: THREE.Vector3; halfX: number; halfZ: number; color: string }
 /** Minimap rectangle (top-down), `kind` picks its fill. */
-export type MapRect = { x0: number; x1: number; z0: number; z1: number; kind: 'building' | 'cover' | 'wall' }
+export type MapRect = { x0: number; x1: number; z0: number; z1: number; kind: 'building' | 'cover' | 'wall' | 'water' }
 export type TeamSide = 'attack' | 'defend'
 
 /** Materials shared by every map (per-map colours come from MapDef.look). */
@@ -66,6 +66,9 @@ export class Arena {
   readonly K: number
   readonly HX: number
   readonly HZ: number
+  /** Look and decor options of this map (roofs, trees, paving, landmark…). */
+  private style: MapStyle = {}
+  private accentCount = 1
   /** World offset of this map (maps sit side by side in one physics world). */
   readonly origin: THREE.Vector3
   private readonly hemi: THREE.HemisphereLight
@@ -115,8 +118,12 @@ export class Arena {
       return (this.mats[key] = m)
     }
     const stucco = stuccoTexture()
-    lam('floor', L.floor, tileTexture(), 0)
-    lam('street', L.street, tileTexture(true), 0)
+    const st: MapStyle = def.style ?? {}
+    this.style = st
+    const floorTex = { tile: tileTexture, sand: sandTexture, cobble: () => cobbleTexture(false), gravel: gravelTexture }[st.floorTex ?? 'tile']
+    const streetTex = { tile: () => tileTexture(true), waves: wavesTexture, asphalt: asphaltTexture, cobble: () => cobbleTexture(true) }[st.streetTex ?? 'tile']
+    lam('floor', L.floor, floorTex(), 0)
+    lam('street', L.street, streetTex(), 0)
     lam('plaza', PALETTE.plaza, plazaTexture(), 0)
     lam('grass', L.grass, grassTexture(), 0)
     L.stucco.forEach((c, i) => lam(`stucco${i}`, c, stucco))
@@ -140,12 +147,35 @@ export class Arena {
     lam('metal', PALETTE.metal)
     lam('perimeter', PALETTE.perimeter, stucco)
     lam('trunk', PALETTE.trunk)
-    PALETTE.leaf.forEach((c, i) => {
+    ;(st.leaf ?? PALETTE.leaf).forEach((c, i) => {
       const m = lam(`leaf${i}`, c, undefined, 0.45)
       ;(m as THREE.MeshLambertMaterial).flatShading = true
     })
     PALETTE.bloom.forEach((c, i) => lam(`bloom${i}`, c, undefined, 0))
-    this.mats.water = new THREE.MeshLambertMaterial({ color: PALETTE.water, emissive: '#1d5e6e', emissiveIntensity: 0.35 })
+    // Prop accents (torii vermilion, parasols, stall awnings, taxi yellow…).
+    const accents = st.accent ?? ['#d2382b']
+    this.accentCount = accents.length
+    accents.forEach((c, i) => {
+      const m = lam(`accent${i}`, c, undefined, 0.2)
+      m.side = THREE.DoubleSide
+    })
+    lam('dark', '#26282c', undefined, 0)
+    lam('red', '#c8392b', undefined, 0)
+    lam('rock', '#6f7d6c', undefined, 0)
+    ;(this.mats.rock as THREE.MeshLambertMaterial).flatShading = true
+    lam('brick', '#b4623f', undefined, 0)
+    lam('verdigris', '#7fa38c', undefined, 0)
+    lam('gold', '#e0b450', undefined, 0)
+    lam('white', '#f4f1ea', undefined, 0)
+    this.mats.sea = new THREE.MeshLambertMaterial({ color: '#2a8fb8', emissive: '#0f4f6a', emissiveIntensity: 0.45 })
+    const tower = new THREE.MeshLambertMaterial({ color: L.night ? '#1c2030' : '#9aa2ae', map: towerTexture(L.night) })
+    if (L.night) {
+      tower.emissive.set('#ffffff')
+      tower.emissiveMap = tower.map
+      tower.emissiveIntensity = 0.9
+    }
+    this.mats.tower = tower
+    this.mats.water = new THREE.MeshLambertMaterial({ color: st.water ?? PALETTE.water, map: rippleTexture(), emissive: st.water ?? '#1d5e6e', emissiveIntensity: 0.25 })
     this.mats.lampGlow = new THREE.MeshBasicMaterial({ color: L.night ? '#ffe2a0' : '#fff1c8' })
     this.mats.lampPool = new THREE.MeshBasicMaterial({ map: poolTexture(), color: '#ffb768', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.55, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 })
     PALETTE.backdrop.forEach((c, i) => (this.mats[`far${i}`] = new THREE.MeshLambertMaterial({ color: c })))
@@ -154,7 +184,7 @@ export class Arena {
     this.mats.paint = new THREE.MeshBasicMaterial({ map: sitePaintTexture(), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
     // Contact shadow skirts (fake ambient occlusion where walls and props meet the ground).
     this.mats.ao = new THREE.MeshBasicMaterial({ map: aoTexture(), color: L.night ? '#04060c' : '#1e140d', transparent: true, opacity: L.night ? 0.8 : 0.78, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 })
-    for (const k of ['ao', 'lampPool', 'window', 'frame', 'paint', 'lampGlow', 'water', 'far0', 'far1', 'far2', 'far3', 'farRoof', 'cypress', 'grass', 'bloom0', 'bloom1', 'bloom2', 'bloom3']) this.noShadow.add(k)
+    for (const k of ['sea', 'tower', 'rock', 'ao', 'lampPool', 'window', 'frame', 'paint', 'lampGlow', 'water', 'far0', 'far1', 'far2', 'far3', 'farRoof', 'cypress', 'grass', 'bloom0', 'bloom1', 'bloom2', 'bloom3']) this.noShadow.add(k)
     this.barrierMat = new THREE.MeshBasicMaterial({ map: barrierTexture(), color: new THREE.Color(0.35, 1.6, 1.4), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
     this.buildSky()
     this.buildLighting()
@@ -164,8 +194,11 @@ export class Arena {
     for (const [x, z, w, d, h, kind] of def.cover) this.cover(x * this.K, z * this.K, w, d, h, kind)
     for (const [x, z, s] of def.trees) this.tree(x * this.K, z * this.K, s)
     for (const [x, z] of def.lamps) this.lamp(x * this.K, z * this.K)
+    for (const r of def.water ?? []) this.canal(r[0] * this.K, r[1] * this.K, r[2] * this.K, r[3] * this.K)
+    for (const [x, z, kind, rot] of def.props ?? []) this.prop(kind, x * this.K, z * this.K, rot ?? 0)
     if (def.sites) this.buildSites()
     this.buildBackdrop()
+    this.buildLandmark()
     this.flush()
     this.physics.world.step()
     this.nav = this.bakeNav()
@@ -362,9 +395,12 @@ export class Arena {
     this.flat('grass', -this.HX + 1, this.HX - 1, this.HZ - 5, this.HZ - 1, 0.008, 5)
     // Outside the walls: a plain under the ridge so the horizon never shows a void.
     for (const [x0, x1, z0, z1] of [[-400, 400, -400, -this.HZ], [-400, 400, this.HZ, 400], [-400, -this.HX, -this.HZ, this.HZ], [this.HX, 400, -this.HZ, this.HZ]]) {
+      const sea = this.style.sea && z1 <= -this.HZ
       const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0)
       g.rotateX(-Math.PI / 2)
-      this.queue('grass', g, new THREE.Matrix4().makeTranslation((x0 + x1) / 2, -0.05, (z0 + z1) / 2))
+      this.queue(sea ? 'sea' : 'grass', g, new THREE.Matrix4().makeTranslation((x0 + x1) / 2, sea ? -0.4 : -0.05, (z0 + z1) / 2))
+      // A strip of sand between the sea wall and the water.
+      if (sea) this.flat('floor', -400, 400, -this.HZ - 7, -this.HZ - 1, -0.02, 4)
     }
     this.collider(0, -0.5, 0, this.HX * 2 + 6, 1, this.HZ * 2 + 6, 'concrete')
   }
@@ -391,7 +427,13 @@ export class Arena {
     this.aoStrip(-this.HX, this.HZ - 1, this.HX, this.HZ - 1, 0, -1, 2.8)
     this.aoStrip(-this.HX + 1, -this.HZ, -this.HX + 1, this.HZ, 1, 0, 2.8)
     this.aoStrip(this.HX - 1, -this.HZ, this.HX - 1, this.HZ, -1, 0, 2.8)
-    wall(0, -this.HZ - t / 2 + 1, this.HX * 2 + 2 * t, t)
+    if (this.style.sea) {
+      // Sea side: a low promenade wall you can look over (an invisible wall keeps players in).
+      const cz = -this.HZ - t / 2 + 1
+      this.box('perimeter', 0, 0, cz, this.HX * 2 + 2 * t, 1.1, t, { tile: 6, collide: false })
+      this.box('white', 0, 1.1, cz, this.HX * 2 + 2 * t + 0.3, 0.18, t + 0.3, { collide: false, tile: 2 })
+      this.collider(0, h / 2, cz, this.HX * 2 + 2 * t, h, t, 'concrete')
+    } else wall(0, -this.HZ - t / 2 + 1, this.HX * 2 + 2 * t, t)
     wall(0, this.HZ + t / 2 - 1, this.HX * 2 + 2 * t, t)
     wall(-this.HX - t / 2 + 1, 0, t, this.HZ * 2)
     wall(this.HX + t / 2 - 1, 0, t, this.HZ * 2)
@@ -413,13 +455,30 @@ export class Arena {
     this.box('base', cx, 0, cz, w + 0.14, 1, d + 0.14, { collide: false, tile: 2 })
     this.box(`trim${style}`, cx, h - 0.35, cz, w + 0.3, 0.35, d + 0.3, { collide: false, tile: 2 })
     this.box(`trim${style}`, cx, h * 0.5, cz, w + 0.16, 0.16, d + 0.16, { collide: false, tile: 2 })
-    // Pitched roof, ridge along the long side.
-    const roof = roofGeometry(w + 1, d + 1, Math.min(4, Math.min(w, d) * 0.3), w >= d)
-    const rm = new THREE.Matrix4().makeTranslation(cx, h, cz)
-    this.queue(`roof${(style + index) % 3}`, roof.slopes, rm)
-    this.queue(`stucco${style}`, roof.gables, rm)
-    // Chimney on bigger blocks.
-    if (w * d > 200) this.box('base', cx + w * 0.22, h, cz - d * 0.18, 1, 3.2, 1, { collide: false, tile: 2 })
+    if (this.style.roof === 'flat') {
+      // Flat roof: slab, parapet and a few rooftop units (water tanks, AC boxes).
+      this.box(`roof${(style + index) % 3}`, cx, h - 0.05, cz, w - 0.2, 0.2, d - 0.2, { collide: false, tile: 3 })
+      this.box(`stucco${style}`, cx, h, cz - d / 2 + 0.15, w + 0.3, 0.9, 0.3, { collide: false, tile: 4 })
+      this.box(`stucco${style}`, cx, h, cz + d / 2 - 0.15, w + 0.3, 0.9, 0.3, { collide: false, tile: 4 })
+      this.box(`stucco${style}`, cx - w / 2 + 0.15, h, cz, 0.3, 0.9, d, { collide: false, tile: 4 })
+      this.box(`stucco${style}`, cx + w / 2 - 0.15, h, cz, 0.3, 0.9, d, { collide: false, tile: 4 })
+      if (w * d > 120) {
+        this.box('metal', cx + w * 0.2, h, cz - d * 0.15, 2.2, 1.4, 1.6, { collide: false, tile: 2 })
+        this.box('metal', cx - w * 0.22, h, cz + d * 0.18, 1.4, 1, 1.4, { collide: false, tile: 2 })
+      }
+    } else {
+      // Pitched roof, ridge along the long side.
+      const roof = roofGeometry(w + 1, d + 1, Math.min(4, Math.min(w, d) * 0.3), w >= d)
+      const rm = new THREE.Matrix4().makeTranslation(cx, h, cz)
+      this.queue(`roof${(style + index) % 3}`, roof.slopes, rm)
+      this.queue(`stucco${style}`, roof.gables, rm)
+      // Chimney on bigger blocks.
+      if (w * d > 200) this.box('base', cx + w * 0.22, h, cz - d * 0.18, 1, 3.2, 1, { collide: false, tile: 2 })
+    }
+    // Upper floors: one row of windows per storey on tall blocks, a single row on houses.
+    const rows: number[] = []
+    if (h < 10) rows.push(h * 0.5 + 1.6)
+    else for (let y = 5.1; y + 1.1 < h - 0.6; y += 3.2) rows.push(y)
     const faces: { along: 'x' | 'z'; at: number; from: number; to: number; normal: number }[] = [
       { along: 'x', at: z0, from: x0, to: x1, normal: -1 },
       { along: 'x', at: z1, from: x0, to: x1, normal: 1 },
@@ -434,8 +493,8 @@ export class Arena {
       for (let i = 0; i < n; i += 1) {
         const t = f.from + step * (i + 0.5)
         const door = i % 3 === 1 && len > 10 && i % 6 === 1
-        // Upper floor window always; ground floor gets a door or a window.
-        this.facade(f.along, f.at, t, h * 0.5 + 1.6, 1.3, 1.7, f.normal, false, style, i)
+        // Upper floor windows always; ground floor gets a door or a window.
+        for (const y of rows) this.facade(f.along, f.at, t, y, 1.3, 1.7, f.normal, false, style, i)
         if (door) this.facade(f.along, f.at, t, 1.35, 1.6, 2.7, f.normal, true, style, i)
         else if (i % 2 === 0) this.facade(f.along, f.at, t, 1.9, 1.3, 1.5, f.normal, false, style, i + 1)
       }
@@ -465,6 +524,7 @@ export class Arena {
       put(`awning${(style + i) % 3}`, awning, 0, h / 2 + 0.55, 0.65, new THREE.Euler(-Math.PI / 2 + 0.55, 0, 0))
       return
     }
+    if (this.style.windows === 'modern') return
     // Shutters in the trim colour.
     for (const sx of [-1, 1]) put(`trim${(style + 1) % 3}`, worldBox(w * 0.48, h + 0.1, 0.06, 2), sx * (w / 2 + w * 0.26 + 0.12), 0, 0.07)
     if ((i + style) % 3 === 0) {
@@ -515,6 +575,7 @@ export class Arena {
 
   /** Low-poly broadleaf tree; only the trunk collides (canopy is above head height). */
   private tree(x: number, z: number, s: number): void {
+    if (this.style.tree === 'palm') return this.palm(x, z, s)
     const trunkH = 2.6 * s
     const trunk = new THREE.CylinderGeometry(0.16 * s, 0.24 * s, trunkH, 6)
     this.queue('trunk', trunk, new THREE.Matrix4().makeTranslation(x, trunkH / 2, z))
@@ -527,6 +588,157 @@ export class Arena {
       this.queue(`leaf${i % 2}`, g, new THREE.Matrix4().makeTranslation(x + Math.cos(a) * off, trunkH + r * 0.6 + (i === 0 ? 0.6 * s : 0), z + Math.sin(a) * off))
     }
     this.minimap.push({ x0: x - 0.4, x1: x + 0.4, z0: z - 0.4, z1: z + 0.4, kind: 'cover' })
+  }
+
+  /** Palm: a gently curving segmented trunk and a crown of drooping fronds. */
+  private palm(x: number, z: number, s: number): void {
+    const H = 7.5 * s
+    const lean = (this.rand() - 0.5) * 0.5
+    const dir = this.rand() * Math.PI * 2
+    const segs = 5
+    let px = x
+    let pz = z
+    let y = 0
+    for (let i = 0; i < segs; i += 1) {
+      const h = H / segs
+      const k = (i + 1) / segs
+      const nx = x + Math.cos(dir) * lean * k * k * 4
+      const nz = z + Math.sin(dir) * lean * k * k * 4
+      const g = new THREE.CylinderGeometry(0.17 * s * (1 - k * 0.25), 0.22 * s * (1 - (k - 0.2) * 0.25), h * 1.04, 6)
+      const mid = new THREE.Vector3((px + nx) / 2, y + h / 2, (pz + nz) / 2)
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(nx - px, h, nz - pz).normalize())
+      this.queue('trunk', g, new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1)))
+      px = nx
+      pz = nz
+      y += h
+    }
+    this.collider(x, 1.5, z, 0.45 * s, 3, 0.45 * s, 'wood')
+    for (let f = 0; f < 8; f += 1) {
+      const a = (f / 8) * Math.PI * 2 + this.rand() * 0.3
+      const len = (2.6 + this.rand() * 0.8) * s
+      const g = new THREE.BoxGeometry(len, 0.06, 0.55 * s)
+      g.translate(len / 2, 0, 0)
+      const m = new THREE.Matrix4().compose(new THREE.Vector3(px, y, pz), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, -a, -0.35 - this.rand() * 0.25, 'YXZ')), new THREE.Vector3(1, 1, 1))
+      this.queue(`leaf${f % 2}`, g, m)
+    }
+    this.minimap.push({ x0: x - 0.4, x1: x + 0.4, z0: z - 0.4, z1: z + 0.4, kind: 'cover' })
+  }
+
+  /** Canal or pool: sunken-looking water between stone curbs; an invisible low wall keeps players out. */
+  private canal(x0: number, x1: number, z0: number, z1: number): void {
+    const w = x1 - x0
+    const d = z1 - z0
+    const cx = (x0 + x1) / 2
+    const cz = (z0 + z1) / 2
+    const g = new THREE.PlaneGeometry(w, d)
+    g.rotateX(-Math.PI / 2)
+    const uv = g.getAttribute('uv') as THREE.BufferAttribute
+    for (let i = 0; i < uv.count; i += 1) uv.setXY(i, (uv.getX(i) * w) / 4, (uv.getY(i) * d) / 4)
+    this.queue('water', g, new THREE.Matrix4().makeTranslation(cx, 0.05, cz))
+    const c = 0.35
+    this.box('stone', cx, 0, z0 + c / 2, w, 0.32, c, { collide: false, tile: 2 })
+    this.box('stone', cx, 0, z1 - c / 2, w, 0.32, c, { collide: false, tile: 2 })
+    // End curbs frame the bridges (skipped where the canal runs into the town wall).
+    if (Math.abs(x0 + this.HX) > 1) this.box('stone', x0 + c / 2, 0, cz, c, 0.32, d, { collide: false, tile: 2 })
+    if (Math.abs(x1 - this.HX) > 1) this.box('stone', x1 - c / 2, 0, cz, c, 0.32, d, { collide: false, tile: 2 })
+    this.collider(cx, 0.35, cz, w, 0.7, d, 'concrete')
+    this.minimap.push({ x0, x1, z0, z1, kind: 'water' })
+  }
+
+  /** Map props: parasols, torii gates, stone lanterns, market stalls, taxis, gondolas, benches, hydrants. */
+  private prop(kind: PropKind, x: number, z: number, rot: number): void {
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot)
+    const at = (lx: number, ly: number, lz: number) => new THREE.Vector3(lx, ly, lz).applyQuaternion(q).add(new THREE.Vector3(x, 0, z))
+    /** Box in prop-local coordinates (bottom at ly). */
+    const part = (mat: string, lx: number, ly: number, lz: number, w: number, h: number, d: number, collide = false) => {
+      const p = at(lx, ly + h / 2, lz)
+      this.queue(mat, worldBox(w, h, d, 1), new THREE.Matrix4().compose(p, q, new THREE.Vector3(1, 1, 1)))
+      if (collide) {
+        // Colliders are axis-aligned: use the rotated footprint's bounds.
+        const c = Math.abs(Math.cos(rot))
+        const sn = Math.abs(Math.sin(rot))
+        this.collider(p.x, p.y, p.z, w * c + d * sn, h, w * sn + d * c, mat === 'crate' ? 'wood' : 'metal')
+      }
+    }
+    const accent = (i: number) => `accent${i % this.accentCount}`
+    const n = Math.abs(Math.round(x * 3.1 + z * 1.7))
+    switch (kind) {
+      case 'parasol': {
+        part('metal', 0, 0, 0, 0.08, 2.4, 0.08, true)
+        const cone = new THREE.ConeGeometry(1.5, 0.55, 10, 1, true)
+        this.queue(accent(n), cone, new THREE.Matrix4().makeTranslation(x, 2.55, z))
+        part('white', 0.9, 0, 0.3, 1.8, 0.35, 0.7)
+        return
+      }
+      case 'torii': {
+        for (const sx of [-2.6, 2.6]) {
+          const post = new THREE.CylinderGeometry(0.26, 0.3, 5, 10)
+          const p = at(sx, 2.5, 0)
+          this.queue(accent(0), post, new THREE.Matrix4().makeTranslation(p.x, p.y, p.z))
+          this.collider(p.x, 2.5, p.z, 0.6, 5, 0.6, 'wood')
+          part('dark', sx, 0, 0, 0.75, 0.45, 0.75)
+        }
+        part(accent(0), 0, 4.1, 0, 6.4, 0.34, 0.34)
+        part(accent(0), 0, 4.95, 0, 7.4, 0.4, 0.55)
+        part('dark', 0, 5.35, 0, 8, 0.28, 0.7)
+        this.minimap.push({ x0: x - 0.4, x1: x + 0.4, z0: z - 0.4, z1: z + 0.4, kind: 'cover' })
+        return
+      }
+      case 'lantern': {
+        part('stone', 0, 0, 0, 0.75, 0.25, 0.75, true)
+        part('stone', 0, 0.25, 0, 0.32, 0.75, 0.32, true)
+        part('stone', 0, 1.0, 0, 0.62, 0.48, 0.62)
+        part('lampGlow', 0, 1.1, 0, 0.36, 0.28, 0.66)
+        part('stone', 0, 1.48, 0, 0.95, 0.16, 0.95)
+        part('stone', 0, 1.64, 0, 0.3, 0.22, 0.3)
+        this.aoFootprint(x - 0.4, x + 0.4, z - 0.4, z + 0.4, 0.6)
+        return
+      }
+      case 'stall': {
+        part('crate', 0, 0, 0, 2.6, 1.0, 1.0, true)
+        for (const [sx, sz] of [[-1.3, -0.6], [1.3, -0.6], [-1.3, 1.1], [1.3, 1.1]]) part('metal', sx, 0, sz, 0.08, 2.4, 0.08)
+        const aw = new THREE.PlaneGeometry(3.0, 2.2)
+        const m = new THREE.Matrix4().compose(at(0, 2.35, 0.25), q.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2 + 0.18, 0, 0))), new THREE.Vector3(1, 1, 1))
+        this.queue(accent(n), aw, m)
+        for (let i = 0; i < 5; i += 1) part(`bloom${(i + n) % 4}`, -1.0 + i * 0.5, 1.0, 0, 0.36, 0.3, 0.5)
+        this.aoFootprint(x - 1.4, x + 1.4, z - 0.7, z + 0.7, 0.8)
+        this.minimap.push({ x0: x - 1.3, x1: x + 1.3, z0: z - 0.6, z1: z + 0.6, kind: 'cover' })
+        return
+      }
+      case 'taxi': {
+        part(accent(0), 0, 0.28, 0, 1.9, 0.78, 4.5, true)
+        part('window', 0, 1.06, -0.2, 1.7, 0.62, 2.3, true)
+        part(accent(0), 0, 1.68, -0.2, 1.72, 0.06, 2.32)
+        part('white', 0, 1.74, -0.2, 0.6, 0.22, 0.3)
+        for (const [sx, sz] of [[-0.86, -1.45], [0.86, -1.45], [-0.86, 1.45], [0.86, 1.45]]) part('dark', sx, 0, sz, 0.3, 0.62, 0.66)
+        part('lampGlow', 0, 0.62, 2.26, 1.5, 0.16, 0.04)
+        this.aoFootprint(x - 1.3, x + 1.3, z - 1.3, z + 1.3, 0.9)
+        this.minimap.push({ x0: x - 1, x1: x + 1, z0: z - 1, z1: z + 1, kind: 'cover' })
+        return
+      }
+      case 'gondola': {
+        part('dark', 0, 0.05, 0, 5.6, 0.42, 1.0)
+        part('dark', 3.0, 0.2, 0, 0.6, 0.9, 0.5)
+        part('dark', -3.0, 0.2, 0, 0.6, 1.3, 0.3)
+        part('gold', -3.05, 1.3, 0, 0.2, 0.5, 0.36)
+        part('red', 0.4, 0.45, 0, 1.6, 0.12, 0.8)
+        return
+      }
+      case 'bench': {
+        part('crate', 0, 0.42, 0, 2.0, 0.1, 0.5, true)
+        part('crate', 0, 0.6, -0.22, 2.0, 0.42, 0.08)
+        for (const sx of [-0.85, 0.85]) part('metal', sx, 0, 0, 0.1, 0.42, 0.44)
+        return
+      }
+      case 'hydrant': {
+        const body = new THREE.CylinderGeometry(0.17, 0.2, 0.75, 10)
+        this.queue('red', body, new THREE.Matrix4().makeTranslation(x, 0.375, z))
+        part('red', 0, 0.75, 0, 0.26, 0.12, 0.26)
+        part('red', 0, 0.42, 0, 0.56, 0.12, 0.12)
+        this.collider(x, 0.45, z, 0.45, 0.9, 0.45, 'metal')
+        return
+      }
+    }
   }
 
   /** Street lamp: thin dark post with a lantern. */
@@ -543,21 +755,35 @@ export class Arena {
   }
 
   private buildSites(): void {
-    const defs: [SiteId, number, number, string][] = [['A', -31 * this.K, -24 * this.K, '#ff6b5a'], ['B', 31 * this.K, -24 * this.K, '#ffb648']]
+    const sd = this.def.sites!
+    const [hx, hz] = sd.half ?? [9.5, 8.5]
+    const defs: [SiteId, number, number, string][] = [['A', sd.a[0] * this.K, sd.a[1] * this.K, '#ff6b5a'], ['B', sd.b[0] * this.K, sd.b[1] * this.K, '#ffb648']]
     for (const [id, x, z, color] of defs) {
-      const site: Site = { id, center: new THREE.Vector3(x, 0, z).add(this.origin), halfX: 9.5 * this.K * 0.95, halfZ: 8.5 * this.K * 0.95, color }
+      const site: Site = { id, center: new THREE.Vector3(x, 0, z).add(this.origin), halfX: hx * this.K * 0.95, halfZ: hz * this.K * 0.95, color }
       this.sites.push(site)
       const m = new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition(x, 0.02, z)
       const g = new THREE.PlaneGeometry(site.halfX * 2, site.halfZ * 2)
       const uv = g.getAttribute('uv') as THREE.BufferAttribute
       for (let i = 0; i < uv.count; i += 1) uv.setX(i, uv.getX(i) * 0.5 + (id === 'A' ? 0 : 0.5))
       this.queue('paint', g, m)
-      // Big site letter on the building wall facing the plaza.
-      const wallX = (id === 'A' ? -16 : 16) * this.K
+      // Big site letter: on a wall when the map names one, else on a post at the site's back edge.
       const sign = new THREE.PlaneGeometry(4, 4)
       const suv = sign.getAttribute('uv') as THREE.BufferAttribute
       for (let i = 0; i < suv.count; i += 1) suv.setX(i, suv.getX(i) * 0.5 + (id === 'A' ? 0 : 0.5))
-      const sm = new THREE.Matrix4().compose(new THREE.Vector3(wallX + (id === 'A' ? -0.1 : 0.1), 4.4, -25 * this.K), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), id === 'A' ? -Math.PI / 2 : Math.PI / 2), new THREE.Vector3(1, 1, 1))
+      const wall = sd.signs?.[id]
+      let pos: THREE.Vector3
+      let rot = 0
+      if (wall) {
+        rot = wall[2]
+        pos = new THREE.Vector3(wall[0] * this.K - Math.sin(-rot) * 0.1, 4.4, wall[1] * this.K)
+      } else {
+        const px = x + (id === 'A' ? -1 : 1) * site.halfX * 0.6
+        const pz = z - site.halfZ * 0.9
+        this.box('metal', px, 0, pz, 0.22, 5.4, 0.22, { surface: 'metal', tile: 1 })
+        this.box('dark', px, 3.2, pz - 0.08, 4.3, 4.3, 0.1, { collide: false, tile: 1 })
+        pos = new THREE.Vector3(px, 5.35, pz + 0.01)
+      }
+      const sm = new THREE.Matrix4().compose(pos, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot), new THREE.Vector3(1, 1, 1))
       this.queue('paint', sign, sm)
     }
   }
@@ -572,6 +798,16 @@ export class Arena {
       const x = Math.cos(a) * r * 1.05
       const z = Math.sin(a) * r
       if (Math.abs(x) < this.HX + 8 && Math.abs(z) < this.HZ + 8) continue
+      if (this.style.sea && z < 0) continue
+      if (this.style.backdrop === 'towers') {
+        // City block towers with window grids (lit at night).
+        const w = 10 + rnd() * 14
+        const d = 10 + rnd() * 14
+        const h = 30 + rnd() * 70
+        const m = new THREE.Matrix4().makeRotationY(Math.round(rnd() * 3) * (Math.PI / 2)).setPosition(x, h / 2, z)
+        this.queue('tower', worldBox(w, h, d, 12), m)
+        continue
+      }
       const w = 6 + rnd() * 10
       const d = 6 + rnd() * 10
       const h = 6 + rnd() * 12
@@ -589,9 +825,91 @@ export class Arena {
       const x = Math.cos(a) * r * 1.05
       const z = Math.sin(a) * r
       if (Math.abs(x) < this.HX + 4 && Math.abs(z) < this.HZ + 4) continue
+      if ((this.style.sea && z < 0) || this.style.backdrop === 'towers') continue
       const h = 9 + rnd() * 7
       const g = new THREE.ConeGeometry(1.4 + rnd() * 0.6, h, 6)
       this.queue('cypress', g, new THREE.Matrix4().makeTranslation(x, h / 2, z))
+    }
+  }
+
+  /** A recognisable silhouette of the place, far beyond the walls (no colliders). */
+  private buildLandmark(): void {
+    const lm = this.style.landmark
+    if (!lm) return
+    const put = (mat: string, g: THREE.BufferGeometry, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1, ry = 0) =>
+      this.queue(mat, g, new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ry), new THREE.Vector3(sx, sy, sz)))
+    const box = (mat: string, x: number, y0: number, z: number, w: number, h: number, d: number) => put(mat, worldBox(w, h, d, 6), x, y0 + h / 2, z)
+    switch (lm) {
+      case 'sugarloaf': {
+        // Sugarloaf rising from the bay, Urca hill beside it, Corcovado with the statue far right.
+        put('rock', new THREE.SphereGeometry(1, 18, 14, 0, Math.PI * 2, 0, Math.PI / 2), -120, -2, -230, 42, 105, 38)
+        put('rock', new THREE.SphereGeometry(1, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), -175, -2, -205, 48, 46, 40)
+        put('leaf0', new THREE.SphereGeometry(1, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), -175, -1, -205, 49, 30, 41)
+        put('rock', new THREE.ConeGeometry(70, 150, 9), 190, 73, -250, 1, 1, 0.8)
+        box('white', 190, 146, -250, 3, 14, 2.5)
+        box('white', 190, 155, -250, 18, 2.6, 2.5)
+        return
+      }
+      case 'campanile': {
+        // St Mark's bell tower and the basilica domes over the lagoon.
+        box('brick', 120, 0, -170, 13, 82, 13)
+        box('white', 120, 82, -170, 15, 12, 15)
+        box('dark', 120, 85, -170, 15.2, 6, 9)
+        box('dark', 120, 85, -170, 9, 6, 15.2)
+        box('brick', 120, 94, -170, 13, 6, 13)
+        put('verdigris', new THREE.ConeGeometry(9.5, 24, 4), 120, 112, -170, 1, 1, 1, Math.PI / 4)
+        put('gold', new THREE.SphereGeometry(1.6, 8, 6), 120, 125, -170)
+        for (const [dx, dz, r] of [[70, -150, 11], [90, -150, 9], [80, -165, 10], [60, -165, 8]]) {
+          box('white', dx, 0, dz, r * 1.6, 22, r * 1.6)
+          put('verdigris', new THREE.SphereGeometry(r, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), dx, 22, dz)
+        }
+        return
+      }
+      case 'pagoda': {
+        // Five-storey pagoda among the hills.
+        let y = 0
+        for (let i = 0; i < 5; i += 1) {
+          const w = 16 - i * 2.2
+          box('brick', -130, y, -165, w, 8, w)
+          box('dark', -130, y + 8, -165, w + 8, 1.4, w + 8)
+          y += 9.4
+        }
+        put('gold', new THREE.CylinderGeometry(0.6, 0.6, 16, 6), -130, y + 8, -165)
+        put('rock', new THREE.ConeGeometry(120, 90, 10), -60, 40, -330, 1.6, 1, 1)
+        return
+      }
+      case 'minaret': {
+        // Koutoubia-style minaret with its lantern and three golden spheres.
+        box('brick', 140, 0, -180, 13, 70, 13)
+        box('white', 140, 62, -180, 13.6, 3, 13.6)
+        box('brick', 140, 70, -180, 15, 2, 15)
+        box('brick', 140, 72, -180, 7, 12, 7)
+        put('verdigris', new THREE.ConeGeometry(5, 6, 4), 140, 87, -180, 1, 1, 1, Math.PI / 4)
+        for (let i = 0; i < 3; i += 1) put('gold', new THREE.SphereGeometry(1.5 - i * 0.3, 10, 8), 140, 91 + i * 3, -180)
+        return
+      }
+      case 'skyline': {
+        // A stepped art-deco tower with a spire towers over the city.
+        box('tower', 60, 0, -250, 34, 150, 30)
+        box('tower', 60, 150, -250, 24, 40, 22)
+        box('tower', 60, 190, -250, 14, 26, 13)
+        box('white', 60, 216, -250, 7, 10, 7)
+        put('white', new THREE.CylinderGeometry(0.6, 1.6, 40, 8), 60, 246, -250)
+        box('tower', -90, 0, -230, 30, 120, 30)
+        put('white', new THREE.CylinderGeometry(0.5, 1, 34, 6), -90, 137, -230)
+        return
+      }
+      case 'church': {
+        // Hilltop cathedral: twin towers and a dome.
+        box('white', -140, 0, -190, 50, 30, 30)
+        box('white', -162, 0, -175, 12, 52, 12)
+        box('white', -118, 0, -175, 12, 52, 12)
+        put('dark', new THREE.ConeGeometry(8, 14, 4), -162, 59, -175, 1, 1, 1, Math.PI / 4)
+        put('dark', new THREE.ConeGeometry(8, 14, 4), -118, 59, -175, 1, 1, 1, Math.PI / 4)
+        box('white', -140, 30, -200, 18, 10, 18)
+        put('verdigris', new THREE.SphereGeometry(10, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), -140, 40, -200)
+        return
+      }
     }
   }
 
@@ -834,6 +1152,148 @@ function tileTexture(street = false): THREE.CanvasTexture {
       }
     }
   })
+}
+
+/** Beach / dusty ground: warm speckles and faint wind ripples (multiplied by the floor colour). */
+function sandTexture(): THREE.CanvasTexture {
+  return canvasTex(256, (g, s) => {
+    g.fillStyle = '#f2ece2'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(31)
+    g.strokeStyle = 'rgba(190,170,140,0.22)'
+    g.lineWidth = 3
+    for (let y = 0; y < s; y += 22) {
+      g.beginPath()
+      for (let x = 0; x <= s; x += 8) g.lineTo(x, y + Math.sin((x / s) * Math.PI * 4 + y) * 4)
+      g.stroke()
+    }
+    for (let i = 0; i < 1600; i += 1) {
+      const v = 200 + Math.floor(r() * 55)
+      g.fillStyle = `rgba(${v},${v - 12},${v - 30},0.5)`
+      g.fillRect(r() * s, r() * s, 1.5, 1.5)
+    }
+  })
+}
+
+/** Rounded cobblestones in dark joints (old towns). */
+function cobbleTexture(street: boolean): THREE.CanvasTexture {
+  return canvasTex(256, (g, s) => {
+    g.fillStyle = street ? '#8f877c' : '#a59c90'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(street ? 41 : 43)
+    const n = 10
+    const c = s / n
+    for (let y = 0; y < n; y += 1) {
+      for (let x = 0; x < n + 1; x += 1) {
+        const v = 205 + Math.floor(r() * 45)
+        g.fillStyle = `rgb(${v},${v - 4},${v - 12})`
+        const ox = (y % 2) * c * 0.5
+        g.beginPath()
+        g.ellipse(x * c + ox - c / 2, y * c + c / 2, c * (0.42 + r() * 0.06), c * (0.4 + r() * 0.06), r() * 0.6, 0, Math.PI * 2)
+        g.fill()
+      }
+    }
+  })
+}
+
+/** Raked temple gravel: fine grey grain with combed lines. */
+function gravelTexture(): THREE.CanvasTexture {
+  return canvasTex(256, (g, s) => {
+    g.fillStyle = '#ecebe6'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(51)
+    for (let i = 0; i < 2600; i += 1) {
+      const v = 190 + Math.floor(r() * 65)
+      g.fillStyle = `rgba(${v},${v},${v - 6},0.7)`
+      g.fillRect(r() * s, r() * s, 2, 2)
+    }
+    g.strokeStyle = 'rgba(160,156,148,0.35)'
+    g.lineWidth = 2
+    for (let y = 8; y < s; y += 16) {
+      g.beginPath()
+      g.moveTo(0, y)
+      g.lineTo(s, y)
+      g.stroke()
+    }
+  })
+}
+
+/** Copacabana promenade: black-and-white wave mosaic (tiles seamlessly). */
+function wavesTexture(): THREE.CanvasTexture {
+  return canvasTex(256, (g, s) => {
+    g.fillStyle = '#ffffff'
+    g.fillRect(0, 0, s, s)
+    g.fillStyle = '#3c3c3c'
+    for (let band = 0; band < 2; band += 1) {
+      const y0 = band * (s / 2)
+      g.beginPath()
+      for (let x = 0; x <= s; x += 4) g.lineTo(x, y0 + s * 0.16 + Math.sin((x / s) * Math.PI * 2) * s * 0.12)
+      for (let x = s; x >= 0; x -= 4) g.lineTo(x, y0 + s * 0.34 + Math.sin((x / s) * Math.PI * 2) * s * 0.12)
+      g.closePath()
+      g.fill()
+    }
+    const r = seeded(61)
+    for (let i = 0; i < 900; i += 1) {
+      g.fillStyle = `rgba(128,128,128,${0.08 + r() * 0.1})`
+      g.fillRect(r() * s, r() * s, 3, 3)
+    }
+  })
+}
+
+/** Water ripples: soft light streaks (multiplied by the water colour). */
+function rippleTexture(): THREE.CanvasTexture {
+  return canvasTex(128, (g, s) => {
+    g.fillStyle = '#cfd8d8'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(91)
+    for (let i = 0; i < 70; i += 1) {
+      g.strokeStyle = `rgba(255,255,255,${0.25 + r() * 0.35})`
+      g.lineWidth = 1 + r() * 1.5
+      const x = r() * s
+      const y = r() * s
+      g.beginPath()
+      g.moveTo(x, y)
+      g.quadraticCurveTo(x + 8, y - 3, x + 16 + r() * 10, y)
+      g.stroke()
+    }
+  })
+}
+
+/** Asphalt: speckled, slightly patched (multiplied by a dark street colour). */
+function asphaltTexture(): THREE.CanvasTexture {
+  return canvasTex(256, (g, s) => {
+    g.fillStyle = '#d8d8d8'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(71)
+    for (let i = 0; i < 6; i += 1) {
+      g.fillStyle = `rgba(150,150,150,${0.15 + r() * 0.15})`
+      g.fillRect(r() * s, r() * s, 30 + r() * 60, 20 + r() * 40)
+    }
+    for (let i = 0; i < 2400; i += 1) {
+      const v = 160 + Math.floor(r() * 95)
+      g.fillStyle = `rgba(${v},${v},${v},0.6)`
+      g.fillRect(r() * s, r() * s, 1.5, 1.5)
+    }
+  })
+}
+
+/** Office-tower facade: a window grid, lit at random at night. */
+function towerTexture(night: boolean): THREE.CanvasTexture {
+  const t = canvasTex(128, (g, s) => {
+    g.fillStyle = night ? '#0a0c12' : '#e8ebef'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(81)
+    const n = 8
+    const c = s / n
+    for (let y = 0; y < n; y += 1) {
+      for (let x = 0; x < n; x += 1) {
+        const lit = r() < 0.38
+        g.fillStyle = night ? (lit ? (r() < 0.5 ? '#ffd890' : '#bfe0ff') : '#141824') : lit ? '#7a90a8' : '#4a5a6e'
+        g.fillRect(x * c + 2, y * c + 3, c - 4, c - 6)
+      }
+    }
+  })
+  return t
 }
 
 /** Concentric-ring plaza paving. */

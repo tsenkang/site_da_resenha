@@ -5,7 +5,7 @@
  */
 import type { TacticalState, TeamIndex } from '../game/tactical.ts'
 import type { NetClient } from './client.ts'
-import { NET_RATE, type PlayerFrame, type Vec3 } from './protocol.ts'
+import { NET_RATE, type OnlineMapId, type PlayerFrame, type Vec3 } from './protocol.ts'
 import { netIds, toLocalState, type NetIds } from './view.ts'
 
 /** How far behind the newest snapshot remote players are drawn (two network ticks). */
@@ -18,6 +18,8 @@ export class NetLink {
   readonly ids: NetIds
   readonly roster: string[]
   readonly me: string
+  /** Map the host picked. */
+  readonly map: OnlineMapId
   state: TacticalState
   spikePos: Vec3 | null
   private snaps: Snap[] = []
@@ -27,12 +29,13 @@ export class NetLink {
 
   constructor(
     readonly client: NetClient,
-    start: { you: string; roster: string[] },
+    start: { you: string; roster: string[]; map: OnlineMapId },
     first: { s: TacticalState; spikePos: Vec3 | null },
     ally0: number,
     enemy0: number,
   ) {
     this.me = start.you
+    this.map = start.map
     this.roster = start.roster
     const teams = start.roster.map((_, i) => first.s.players[i]?.team ?? (0 as TeamIndex))
     this.ids = netIds(start.roster, teams, start.you, ally0, enemy0)

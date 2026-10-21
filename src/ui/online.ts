@@ -1,4 +1,5 @@
-import type { LobbyView } from '../net/protocol'
+import { ONLINE_MAPS, type LobbyView, type OnlineMapId } from '../net/protocol'
+import { MAPS } from '../game/maps'
 import type { TeamIndex, TeamSize } from '../game/tactical'
 
 /** What the online screen asks the app to do (main.ts owns the connection). */
@@ -9,6 +10,7 @@ export type OnlineActions = {
   ready(on: boolean): void
   fillBots(on: boolean): void
   start(): void
+  map(map: OnlineMapId): void
   leave(): void
 }
 
@@ -73,6 +75,8 @@ export class OnlineView {
             <div class="ol-team t0"><h3>TIME A <small>ataca primeiro</small></h3><ul></ul><span class="ol-pick"></span></div>
             <div class="ol-team t1"><h3>TIME B <small>defende primeiro</small></h3><ul></ul><span class="ol-pick"></span></div>
           </div>
+          <div class="ol-title">MAPA <small class="ol-map-hint"></small></div>
+          <div class="ol-maps"></div>
           <label class="ol-check"><input type="checkbox" class="ol-fill"> Começar com vagas abertas (os times podem ter tamanhos diferentes)</label>
           <div class="ol-row ol-actions"><span class="ol-ready"></span><span class="ol-start"></span></div>
         </div>
@@ -114,6 +118,18 @@ export class OnlineView {
     root.querySelector('.ol-ready')!.replaceWith(button('PRONTO', () => this.toggleReady(), 'ol-ready-btn'))
     root.querySelector('.ol-start')!.replaceWith(button('COMEÇAR PARTIDA', () => actions.start(), 'primary ol-start-btn'))
     root.querySelector('.ol-copy')!.replaceWith(button('COPIAR CONVITE', () => this.copyInvite(), 'ol-copy-btn'))
+    const maps = root.querySelector('.ol-maps')!
+    for (const id of ONLINE_MAPS) {
+      const def = MAPS[id]
+      const b = document.createElement('button')
+      b.className = `ol-map map-${id}`
+      b.dataset.map = id
+      b.innerHTML = `<b>${def.name}</b><small>${def.place ?? ''}</small>`
+      b.addEventListener('click', () => {
+        if (this.lobby && this.lobby.players.find(p => p.id === this.me)?.host) actions.map(id)
+      })
+      maps.appendChild(b)
+    }
     root.querySelector<HTMLInputElement>('.ol-fill')!.addEventListener('change', e => actions.fillBots((e.target as HTMLInputElement).checked))
     root.querySelector('.ol-back')!.replaceWith(
       button('VOLTAR', () => {
@@ -158,7 +174,6 @@ export class OnlineView {
     this.lobbyEl.hidden = false
     const q = <T extends Element>(s: string) => this.root.querySelector<T>(s)!
     q('.ol-code').textContent = l.code
-    q('.ol-size').textContent = `${l.teamSize}v${l.teamSize} · Base Aurora`
     const mine = l.players.find(p => p.id === me)
     const host = !!mine?.host
     for (const t of [0, 1] as TeamIndex[]) {
@@ -169,6 +184,12 @@ export class OnlineView {
       team.querySelector('ul')!.innerHTML = rows.join('')
       team.querySelector<HTMLButtonElement>('.ol-team-btn')!.hidden = mine?.team === t || list.length >= l.teamSize
     }
+    this.root.querySelectorAll<HTMLButtonElement>('.ol-map').forEach(b => {
+      b.classList.toggle('on', b.dataset.map === l.map)
+      b.disabled = !host
+    })
+    q('.ol-map-hint').textContent = host ? 'clique para escolher' : `escolhido pelo anfitrião: ${MAPS[l.map].name}`
+    q('.ol-size').textContent = `${l.teamSize}v${l.teamSize} · ${MAPS[l.map].name}`
     const fill = q<HTMLInputElement>('.ol-fill')
     fill.checked = l.fillBots
     fill.disabled = !host

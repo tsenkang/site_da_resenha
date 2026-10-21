@@ -6,7 +6,7 @@ import { RANK_COLOR, type Perk } from '../game/onslaught'
 import { accuracy, formatClock, type Combatant, type MatchState, type Medal } from '../game/rules'
 import type { HitKind } from '../game/weapons'
 import { Sparks } from './sparks'
-import { GLYPH, TacticalHudView, type BoardRow } from './tacticalHud'
+import { GLYPH, TacticalHudView, type BoardRow, type MinimapFrame } from './tacticalHud'
 import type { BuyResult, ShopItem } from '../game/tactical'
 import type { MapRect, Site } from '../game/arena'
 import type { MinimapState } from '../game/tacticalMatch'
@@ -839,8 +839,8 @@ export class Ui {
 
   /** Tactical scoreboard snapshot for the results screen. */
   tacBoard: BoardRow[] = []
-  setMap(rects: MapRect[], sites: Site[]): void {
-    this.tac.setMap(rects, sites)
+  setMap(rects: MapRect[], sites: Site[], frame?: MinimapFrame): void {
+    this.tac.setMap(rects, sites, frame)
   }
 
   setOnlineStatus(text: string, kind: 'good' | 'warn' = 'good'): void {

@@ -151,17 +151,17 @@ export class TacticalMatch {
       c.on('damage', m => g.netDamage(net.local(m.target), net.local(m.by), m.hp, m.shield)),
       c.on('kill', m => g.netKill(net.local(m.killer), net.local(m.victim), m.headshot, m.weapon)),
       c.on('smoke', m => {
-        if (m.by !== net.me) this.spawnSmoke(new THREE.Vector3(...m.at))
+        if (m.by !== net.me) this.spawnSmoke(this.fromNet(m.at))
       }),
       c.on('grenade', m => {
-        if (m.by !== net.me) g.explode(new THREE.Vector3(...m.at), 5.2, 0, -1, 'grenade')
+        if (m.by !== net.me) g.explode(this.fromNet(m.at), 5.2, 0, -1, 'grenade')
       }),
     )
     // Our own state goes out at the network rate while alive.
     c.streamFrames(() => {
       const p = g.player
       if (!p.alive || g.mode === 'ended') return null
-      return { pos: [p.position.x, p.position.y, p.position.z], yaw: p.yaw, pitch: p.pitch, flags: p.crouch > 0.5 ? 1 : 0, weapon: g.heldLoadoutWeapon(), shots: g.takeNetShots() }
+      return { pos: this.toNet(p.position), yaw: p.yaw, pitch: p.pitch, flags: p.crouch > 0.5 ? 1 : 0, weapon: g.heldLoadoutWeapon(), shots: g.takeNetShots() }
     })
   }
 
@@ -172,7 +172,7 @@ export class TacticalMatch {
     const before = this.me.loadout
     const next = net.accept(m.s, m.spikePos)
     this.state = next
-    if (m.spikePos) this.spikePos.set(...(m.spikePos as Vec3))
+    if (m.spikePos) this.spikePos.copy(this.fromNet(m.spikePos))
     const events = diffEvents(prev, next)
     for (const e of events) this.onEvent(e)
     if (prev.spike.carrier !== 0 && next.spike.carrier === 0 && !events.some(e => e.type === 'roundStart')) this.game.events.message('VOCÊ PEGOU A SPIKE', 'good')
@@ -198,9 +198,22 @@ export class TacticalMatch {
       const id = net.net(b.id)
       const pose = id ? net.pose(id) : null
       if (!id || !pose) continue
-      b.puppet(dt, tmp.set(pose.pos[0], pose.pos[1], pose.pos[2]), pose.yaw, pose.pitch)
+      b.puppet(dt, this.fromNet(pose.pos, tmp), pose.yaw, pose.pitch)
       for (let n = Math.min(3, net.takeShots(id)); n > 0; n -= 1) b.remoteShot()
     }
+  }
+
+  /**
+   * Positions travel map-relative: maps sit far apart in one world, the protocol keeps
+   * coordinates small and the server never needs to know where a map was built.
+   */
+  toNet(p: THREE.Vector3): Vec3 {
+    const o = this.game.arena.origin
+    return [p.x - o.x, p.y, p.z - o.z]
+  }
+  fromNet(v: Vec3, out = new THREE.Vector3()): THREE.Vector3 {
+    const o = this.game.arena.origin
+    return out.set(v[0] + o.x, v[1], v[2] + o.z)
   }
 
   /** Attacking team in the local frame (online you may be on the server's second team). */
@@ -670,7 +683,7 @@ export class TacticalMatch {
         this.game.scene.remove(t.mesh)
         this.thrown.splice(i, 1)
         this.spawnSmoke(t.pos.clone())
-        if (t.mine && this.net) this.net.client.send({ t: 'smoke', at: [t.pos.x, t.pos.y, t.pos.z] })
+        if (t.mine && this.net) this.net.client.send({ t: 'smoke', at: this.toNet(t.pos) })
       }
     }
   }

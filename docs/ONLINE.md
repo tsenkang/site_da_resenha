@@ -52,6 +52,26 @@ src/net/protocol.ts   (mesmos tipos)       room.ts    (lobby → partida, valida
 Tudo isso tem testes em `tests/net.test.ts`, incluindo um teste com dois clientes reais
 conectando por WebSocket, criando sala, entrando e começando a partida.
 
+## Mapas online
+
+O anfitrião escolhe o mapa no lobby; a sala começa com um mapa sorteado. Todos seguem a mesma
+estrutura da Base Aurora (ataque ao norte, defesa ao sul, locais A e B, barreiras na fase de
+compra), mas cada um tem ruas, locais, coberturas, cores, céu, piso e um marco do lugar:
+
+| Mapa | Inspirado em | Destaques |
+| --- | --- | --- |
+| Base Aurora | vila mediterrânea | o mapa original |
+| Copacabana | Rio de Janeiro | calçadão de ondas, praia com guarda-sóis, Pão de Açúcar e Cristo no horizonte, mar |
+| Pelourinho | Salvador | casarões coloridos, paralelepípedo, igreja de torres gêmeas entre os locais |
+| Veneza | Veneza | canal atravessando o mapa com três pontes, gôndolas, campanário |
+| Kyoto | Kyoto | portais torii, lanternas de pedra, cerejeiras, cascalho, pagode |
+| Marrakech | Marrakech | becos do souk com barracas, palmeiras, telhados planos, minarete ao entardecer |
+| Manhattan | Nova York | noite, arranha-céus com janelas acesas, avenida com táxis, skyline |
+
+Os mapas são definidos em `src/game/realMaps.ts` (layout em unidades de projeto) e a lista do
+online fica em `ONLINE_MAPS` (`src/net/protocol.ts`). As posições vão pela rede relativas ao
+mapa, então o servidor não precisa saber onde cada mapa foi montado.
+
 ## Como o jogo usa a rede
 
 - **Lobby** (`src/ui/online.ts`): nome, criar sala (2v2 a 5v5), entrar com código ou pelo link

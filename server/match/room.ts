@@ -14,9 +14,9 @@ import {
   type LoadoutWeapon, type TacticalEvent, type TacticalState, type TeamIndex, type TeamSize,
 } from '../../src/game/tactical.ts'
 import {
-  canStart, createLobby, fillWithBots, joinLobby, leaveLobby, lobbyView, setFillBots, setReady, switchTeam, type Lobby,
+  canStart, createLobby, fillWithBots, joinLobby, leaveLobby, lobbyView, setFillBots, setMap, setReady, switchTeam, type Lobby,
 } from '../../src/net/lobby.ts'
-import { NET_RATE, type ClientMessage, type ErrorCode, type PlayerFrame, type RoundView, type ServerMessage, type Vec3 } from '../../src/net/protocol.ts'
+import { NET_RATE, type ClientMessage, type ErrorCode, type OnlineMapId, type PlayerFrame, type RoundView, type ServerMessage, type Vec3 } from '../../src/net/protocol.ts'
 
 export type Conn = { id: string; name: string; send(msg: ServerMessage): void }
 
@@ -64,9 +64,9 @@ export class Room {
   /** Random source for the spike carrier (tests make it deterministic). */
   rand: () => number = Math.random
 
-  constructor(code: string, teamSize: TeamSize, host: Conn) {
+  constructor(code: string, teamSize: TeamSize, host: Conn, map: OnlineMapId = 'aurora') {
     this.code = code
-    this.lobby = createLobby(code, teamSize, host)
+    this.lobby = createLobby(code, teamSize, host, map)
     this.conns.set(host.id, host)
     this.broadcastLobby()
   }
@@ -117,6 +117,12 @@ export class Room {
         const r = setFillBots(this.lobby, id, msg.on)
         if (r.ok) this.lobby = r.lobby
         else this.error(id, 'not_host', 'Só o anfitrião pode mudar isso')
+        return this.broadcastLobby()
+      }
+      case 'map': {
+        const r = setMap(this.lobby, id, msg.map)
+        if (r.ok) this.lobby = r.lobby
+        else this.error(id, r.reason === 'in_match' ? 'in_match' : 'not_host', 'Só o anfitrião escolhe o mapa')
         return this.broadcastLobby()
       }
       case 'start':
@@ -173,7 +179,7 @@ export class Room {
     this.state = createTactical(tacticalConfig(this.lobby.teamSize), this.lobby.members.map((m, i) => ({ id: i, name: m.name, team: m.team })))
     this.broadcastLobby()
     const roster = this.lobby.members.map(m => m.id)
-    for (const m of this.lobby.members) this.conns.get(m.id)?.send({ t: 'matchStart', you: m.id, team: m.team, roster })
+    for (const m of this.lobby.members) this.conns.get(m.id)?.send({ t: 'matchStart', you: m.id, team: m.team, roster, map: this.lobby.map })
     this.beginRound()
     this.sendRound(true)
   }

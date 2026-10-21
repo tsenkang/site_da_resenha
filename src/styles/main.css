@@ -704,3 +704,12 @@ body[data-mode='tactical'] .fps { top: auto; bottom: 8px; right: 10px; }
 .ol-status { min-height: 20px; margin-top: 14px; font: 500 14px var(--display); color: var(--dim); overflow-wrap: anywhere; }
 .ol-status[data-kind='warn'] { color: #ffb648; }
 .ol-status[data-kind='good'] { color: #5cf2d3; }
+.ol-title small { margin-left: 8px; letter-spacing: 0.06em; font-weight: 500; color: var(--dim); }
+.ol-maps { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin: 2px 0 6px; }
+.ol-map { pointer-events: auto; display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; text-align: left; border: 1px solid var(--line); background: rgba(236, 232, 225, 0.05); color: var(--text); cursor: pointer; font-family: var(--display); }
+.ol-map b { font: 700 15px var(--display); letter-spacing: 0.08em; text-transform: uppercase; }
+.ol-map small { font: 500 11px var(--display); color: var(--dim); letter-spacing: 0.04em; }
+.ol-map:hover:not(:disabled) { border-color: var(--amber); }
+.ol-map.on { border-color: var(--amber); background: rgba(255, 70, 85, 0.16); box-shadow: inset 3px 0 0 var(--amber); }
+.ol-map:disabled { cursor: default; opacity: 0.6; }
+.ol-map.on:disabled { opacity: 1; }

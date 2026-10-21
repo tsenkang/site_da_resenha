@@ -12,7 +12,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { roomCode } from '../../src/net/lobby.ts'
-import { parseClientMessage, PROTOCOL_VERSION, type ServerMessage } from '../../src/net/protocol.ts'
+import { ONLINE_MAPS, parseClientMessage, PROTOCOL_VERSION, type ServerMessage } from '../../src/net/protocol.ts'
 import { Room, type Conn } from './room.ts'
 
 const TICK = 1 / 20
@@ -120,7 +120,8 @@ export function startMatchServer(
           leave()
           let code = roomCode(Math.random)
           while (rooms.has(code)) code = roomCode(Math.random)
-          room = new Room(code, msg.teamSize, conn)
+          // A random map to start with; the host can change it in the lobby.
+          room = new Room(code, msg.teamSize, conn, ONLINE_MAPS[Math.floor(Math.random() * ONLINE_MAPS.length)])
           rooms.set(code, room)
           return
         }

@@ -8,7 +8,7 @@ import type { Game, GameMode } from './game/game'
 import { Ui } from './ui/ui'
 import { NetClient } from './net/client'
 import { NetLink } from './net/link'
-import { isRoomCode } from './net/protocol'
+import { isRoomCode, type OnlineMapId } from './net/protocol'
 import { createLeaderboardClient, type LeaderboardClient, type Result, type RunTicket } from '../leaderboard.js'
 
 /**
@@ -49,6 +49,7 @@ async function boot(): Promise<void> {
     audio.retryMusic()
     ui.resetHud()
     game.start(selectedMode)
+    ui.setMap(game.arena.minimap, game.arena.sites, game.minimapFrame())
     rankedRun = selectedMode === 'deathmatch'
       ? (async (): Promise<Result<RunTicket>> => {
           const guest = await leaderboard.ensureGuest('RiftRunner')
@@ -112,7 +113,7 @@ async function boot(): Promise<void> {
   }
   let net: NetClient | null = null
   let netMe = ''
-  let netStart: { you: string; roster: string[] } | null = null
+  let netStart: { you: string; roster: string[]; map: OnlineMapId } | null = null
   let onlineMatch = false
   let ids = { ally0: 201, enemy0: 211 }
   const disconnect = () => {
@@ -149,6 +150,7 @@ async function boot(): Promise<void> {
     ui.resetHud()
     rankedRun = null
     game.start('tactical', link)
+    ui.setMap(game.arena.minimap, game.arena.sites, game.minimapFrame())
     ui.show('hud')
     loop.resetAccumulator()
     input.lockPointer()
@@ -175,7 +177,7 @@ async function boot(): Promise<void> {
       ui.online.status(m.message, 'warn')
     })
     c.on('matchStart', m => {
-      netStart = { you: m.you, roster: m.roster }
+      netStart = { you: m.you, roster: m.roster, map: m.map }
     })
     // The first full state after matchStart starts the match; later ones go to the director.
     c.on('state', m => {
@@ -215,6 +217,7 @@ async function boot(): Promise<void> {
       ready: ready => net?.send({ t: 'ready', ready }),
       fillBots: on => net?.send({ t: 'fillBots', on }),
       start: () => net?.send({ t: 'start' }),
+      map: map => net?.send({ t: 'map', map }),
       leave: disconnect,
     },
   })

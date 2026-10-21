@@ -7,9 +7,45 @@
  * - fortaleza · Survival: wide night courtyard around a keep, lit by lanterns and windows.
  */
 import type { GameMode } from './game'
+import { REAL_MAPS } from './realMaps'
+import type { OnlineMapId } from '../net/protocol'
 
-export type MapId = 'aurora' | 'mercado' | 'fortaleza'
-type Rect = [number, number, number, number]
+export type MapId = 'mercado' | 'fortaleza' | OnlineMapId
+export type Rect = [number, number, number, number]
+
+/** Decorative/cover props placed by the map: [x, z, kind, rotation (radians, optional)]. */
+export type PropKind = 'parasol' | 'torii' | 'lantern' | 'stall' | 'taxi' | 'gondola' | 'bench' | 'hydrant'
+export type MapProp = [number, number, PropKind, number?]
+
+/** What makes a place read as itself: roofs, trees, paving, water and a landmark on the horizon. */
+export type MapStyle = {
+  roof?: 'pitched' | 'flat'
+  /** Window style: shutters and flower boxes (old town) or plain modern panes. */
+  windows?: 'shutters' | 'modern'
+  tree?: 'round' | 'palm' | 'cherry'
+  floorTex?: 'tile' | 'sand' | 'cobble' | 'gravel'
+  streetTex?: 'tile' | 'waves' | 'asphalt' | 'cobble'
+  /** Silhouette beyond the walls. */
+  landmark?: 'sugarloaf' | 'campanile' | 'pagoda' | 'minaret' | 'skyline' | 'church'
+  /** Sea along the south side (instead of the town backdrop there). */
+  sea?: boolean
+  /** Backdrop outside the walls: low houses (default) or tall towers. */
+  backdrop?: 'town' | 'towers'
+  /** Leaf colours (cherry blossom pinks, palm greens…). */
+  leaf?: [string, string]
+  /** Canal / pool water colour. */
+  water?: string
+  /** Colour of props such as torii, parasols and stall awnings. */
+  accent?: string[]
+}
+
+/** Spike sites: centres and half extents in design units; signs [x, z, rotY] on a wall (else a post). */
+export type SiteDef = {
+  a: [number, number]
+  b: [number, number]
+  half?: [number, number]
+  signs?: { A: [number, number, number]; B: [number, number, number] }
+}
 
 export type MapLook = {
   sky: [number, string][]
@@ -51,7 +87,7 @@ export type MapDef = {
   streets: Rect[]
   plazas: Rect[]
   /** Tactical only: A/B plant zones and buy-phase barrier lines (design z of attack, defend). */
-  sites: boolean
+  sites: SiteDef | null
   barriers: [number, number] | null
   teamSpawnZ: [number, number]
   ffaSpawns: [number, number][]
@@ -59,11 +95,18 @@ export type MapDef = {
   barrels: [number, number, 'barrel' | 'propane'][]
   pickups: [number, number, 'health' | 'armor' | 'ammo' | 'rocket'][]
   look: MapLook
+  style?: MapStyle
+  /** Canals and pools: water you cannot walk into (bridges are the gaps between rects). */
+  water?: Rect[]
+  props?: MapProp[]
+  /** Shown in the online lobby. */
+  place?: string
 }
 
 const AURORA: MapDef = {
   id: 'aurora',
   name: 'Base Aurora',
+  place: 'Vila mediterrânea',
   scale: 1.3,
   halfX: 46,
   halfZ: 50,
@@ -94,7 +137,7 @@ const AURORA: MapDef = {
   lamps: [[-37, 12], [37, 12], [-37, -2], [37, -2], [-7, 14], [7, 2], [-2.5, -30], [2.5, -20], [-14, 36], [14, 36], [-30, -38], [30, -38]],
   streets: [[-38, -30, -4, 24], [30, 38, -4, 24], [-8, 8, -6, 28], [-3, 3, -36, -6]],
   plazas: [[-44, -18, -36, -8], [18, 44, -36, -8]],
-  sites: true,
+  sites: { a: [-31, -24], b: [31, -24], half: [9.5, 8.5], signs: { A: [-16, -25, -Math.PI / 2], B: [16, -25, Math.PI / 2] } },
   barriers: [34.5, -37.5],
   teamSpawnZ: [44, -45],
   ffaSpawns: [[-41, -44], [41, -44], [-34, 10], [34, 10], [-41, -22], [41, -22], [0, -44], [0, 44], [-36, 42], [36, 42], [0, 12], [-20, -10], [20, -10], [-30, 30], [30, 30], [0, -26]],
@@ -137,7 +180,7 @@ const MERCADO: MapDef = {
   lamps: [[-9, -9], [9, 9], [9, -9], [-9, 9], [-22, 0], [22, 0], [0, -22], [0, 22], [-30, -30], [30, 30], [30, -30], [-30, 30]],
   streets: [[-40, 40, -6, 6], [-6, 6, -40, 40]],
   plazas: [[-22, 22, -22, 22]],
-  sites: false,
+  sites: null,
   barriers: null,
   teamSpawnZ: [34, -34],
   ffaSpawns: [[-34, -12], [34, 12], [12, -34], [-12, 34], [-18, -22], [18, 22], [22, -18], [-22, 18], [-34, 12], [34, -12], [-12, -34], [12, 34], [-10, 0], [10, 0], [0, -10], [0, 10]],
@@ -178,7 +221,7 @@ const FORTALEZA: MapDef = {
   lamps: [[-12, -12], [12, 12], [12, -12], [-12, 12], [-24, -8], [24, 8], [8, -24], [-8, 24], [-34, -34], [34, 34], [34, -34], [-34, 34]],
   streets: [[-40, 40, -14, -10], [-40, 40, 10, 14], [-14, -10, -40, 40], [10, 14, -40, 40]],
   plazas: [[-36, 36, -36, 36]],
-  sites: false,
+  sites: null,
   barriers: null,
   teamSpawnZ: [34, -34],
   ffaSpawns: [[-32, -20], [32, 20], [20, -32], [-20, 32], [-36, 0], [36, 0], [0, -36], [0, 36], [-24, -24], [24, 24], [24, -24], [-24, 24], [-18, 0], [18, 0], [0, -18], [0, 18]],
@@ -196,7 +239,10 @@ const FORTALEZA: MapDef = {
   },
 }
 
-export const MAPS: Record<MapId, MapDef> = { aurora: AURORA, mercado: MERCADO, fortaleza: FORTALEZA }
+export const MAPS: Record<MapId, MapDef> = { aurora: AURORA, mercado: MERCADO, fortaleza: FORTALEZA, ...REAL_MAPS }
 export const MODE_MAP: Record<GameMode, MapId> = { tactical: 'aurora', deathmatch: 'mercado', onslaught: 'fortaleza' }
 /** Maps live side by side in one physics world, far enough apart to never see each other. */
-export const MAP_ORIGIN: Record<MapId, [number, number]> = { aurora: [0, 0], mercado: [2400, 0], fortaleza: [-2400, 0] }
+export const MAP_ORIGIN: Record<MapId, [number, number]> = {
+  aurora: [0, 0], mercado: [2400, 0], fortaleza: [-2400, 0],
+  copacabana: [0, 2400], pelourinho: [0, -2400], veneza: [2400, 2400], kyoto: [-2400, 2400], marrakech: [2400, -2400], manhattan: [-2400, -2400],
+}

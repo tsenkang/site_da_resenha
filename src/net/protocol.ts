@@ -20,6 +20,9 @@ export const PROTOCOL_VERSION = 1
 export const NET_RATE = 20
 export const MAX_NAME = 16
 export const ROOM_CODE_LENGTH = 5
+/** Tactical maps playable online (the host picks one in the lobby). */
+export const ONLINE_MAPS = ['aurora', 'copacabana', 'pelourinho', 'veneza', 'kyoto', 'marrakech', 'manhattan'] as const
+export type OnlineMapId = (typeof ONLINE_MAPS)[number]
 
 export type Vec3 = [number, number, number]
 
@@ -47,6 +50,7 @@ export type ClientMessage =
   | { t: 'team'; team: TeamIndex }
   | { t: 'ready'; ready: boolean }
   | { t: 'fillBots'; on: boolean }
+  | { t: 'map'; map: OnlineMapId }
   | { t: 'start' }
   | { t: 'frame'; f: PlayerFrame }
   | { t: 'hit'; h: HitClaim }
@@ -59,7 +63,7 @@ export type ClientMessage =
 
 // ─── server → client ────────────────────────────────────────────────────
 export type LobbyPlayer = { id: string; name: string; team: TeamIndex; ready: boolean; host: boolean; bot: boolean }
-export type LobbyView = { code: string; teamSize: TeamSize; players: LobbyPlayer[]; fillBots: boolean; started: boolean }
+export type LobbyView = { code: string; teamSize: TeamSize; players: LobbyPlayer[]; fillBots: boolean; started: boolean; map: OnlineMapId }
 
 export type RoundView = {
   round: number
@@ -77,7 +81,7 @@ export type ServerMessage =
   | { t: 'welcome'; v: number; id: string }
   | { t: 'error'; code: ErrorCode; message: string }
   | { t: 'lobby'; lobby: LobbyView }
-  | { t: 'matchStart'; you: string; team: TeamIndex; roster: string[] }
+  | { t: 'matchStart'; you: string; team: TeamIndex; roster: string[]; map: OnlineMapId }
   | { t: 'round'; round: RoundView }
   /** Full rules state (player ids are indexes into matchStart.roster) and where the spike lies. */
   | { t: 'state'; s: TacticalState; spikePos: Vec3 | null }
@@ -149,6 +153,8 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
       return typeof o.ready === 'boolean' ? { t: 'ready', ready: o.ready } : null
     case 'fillBots':
       return typeof o.on === 'boolean' ? { t: 'fillBots', on: o.on } : null
+    case 'map':
+      return ONLINE_MAPS.includes(o.map as OnlineMapId) ? { t: 'map', map: o.map as OnlineMapId } : null
     case 'frame': {
       const f = parseFrame(o.f)
       return f ? { t: 'frame', f } : null

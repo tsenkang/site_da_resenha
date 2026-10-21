@@ -9,6 +9,8 @@ Feito com Three.js (gráficos) e Rapier (física).
 - **Mata-mata** e **Sobrevivência** (8 ondas e um chefe) continuam disponíveis.
 - **Mapa "Base Aurora"**: dois locais de spike (A e B), meio, corredores e barreiras de spawn
   na fase de compra.
+- **7 mapas online inspirados em lugares reais**: Copacabana, Pelourinho, Veneza, Kyoto,
+  Marrakech, Manhattan e a Base Aurora; o anfitrião escolhe no lobby.
 - **Um mapa por modo**: Tático na Base Aurora (dia), Mata-mata no Mercado (pôr do sol, praça
   compacta) e Sobrevivência na Fortaleza (noite, pátio com janelas e postes acesos).
 - **Online com amigos (2v2 a 5v5)**: no menu ONLINE, crie uma sala, mande o convite e jogue o
@@ -68,6 +70,7 @@ use `CHROMIUM_PATH=/caminho/do/chromium pnpm smoke`.
 | --- | --- |
 | `src/game/tactical.ts` | regras do modo tático (rodadas, economia, loja, spike), código puro e testado |
 | `src/game/tacticalMatch.ts` | diretor da partida: times, bots com objetivos, plantar/desarmar, fumaça, espectador |
+| `src/game/realMaps.ts` | os mapas online inspirados em lugares reais |
 | `src/game/maps.ts` | definição dos mapas (layout, spawns, itens, céu e paleta) e qual modo usa qual |
 | `src/game/arena.ts` | constrói um mapa (geometria, colisões, navegação dos bots, locais A/B) |
 | `src/game/bots.ts` | IA dos bots (times, objetivos, combate) |
