@@ -6,8 +6,15 @@ import { applyDamage } from './rules'
 /** `slide`: C/Ctrl pressed this step (slides when moving fast); `crouch`: C/Ctrl held (crouch while held). */
 export type MoveIntent = { x: number; y: number; jump: boolean; sprint: boolean; ads: boolean; slide?: boolean; crouch?: boolean }
 
-const SLIDE_TIME = 0.72
+/** Longest a slide lasts; it usually ends earlier, when friction brings it down to the exit speed. */
+const SLIDE_TIME = 1.25
 const SLIDE_COOLDOWN = 0.35
+/** Slide friction (m/s²): a smooth glide from the entry burst down to the exit speed. */
+const SLIDE_FRICTION = 8.5
+/** How fast a slide can be steered toward the stick/keys (rad/s). */
+const SLIDE_STEER = 1.6
+/** Deceleration while still moving but above the target speed (slide exit, sprint → walk, crouch). */
+const SOFT_BRAKE = 20
 /** How far the eye drops at full slide/crouch depth (metres): eye 1.62 → 1.04 m. */
 const SLIDE_EYE_DROP = 0.58
 
@@ -36,6 +43,8 @@ export class Player {
   private slideDir = new THREE.Vector3()
   /** Smoothed 0..1 slide/crouch depth for the camera. */
   crouch = 0
+  /** `crouch` at the previous fixed step (the camera interpolates between the two). */
+  private prevCrouch = 0
   /** True while the capsule is in its short (crouched/sliding) shape. */
   crouching = false
   private halfH: number = CONFIG.player.halfHeight
@@ -98,6 +107,9 @@ export class Player {
     const c = { x: t.x, y: feetY + this.centerOffset, z: t.z }
     this.body.setTranslation(c, true)
     this.body.setNextKinematicTranslation(c)
+    // Move the collider now, so this step's controller query starts from the planted feet
+    // (otherwise the short capsule floats for one step and the slide begins airborne).
+    this.world.propagateModifiedBodyPositionsToColliders()
     this.crouching = low
     return true
   }
@@ -112,6 +124,7 @@ export class Player {
     this.health = this.maxHealth
     this.sliding = 0
     this.crouch = 0
+    this.prevCrouch = 0
     this.halfH = P.halfHeight
     this.collider.setHalfHeight(P.halfHeight)
     this.crouching = false
@@ -127,7 +140,8 @@ export class Player {
   }
 
   eye(alpha: number, out: THREE.Vector3): THREE.Vector3 {
-    return out.lerpVectors(this.prevPosition, this.position, alpha).setY(out.y + CONFIG.player.eyeHeight - this.crouch * SLIDE_EYE_DROP)
+    const crouch = this.prevCrouch + (this.crouch - this.prevCrouch) * alpha
+    return out.lerpVectors(this.prevPosition, this.position, alpha).setY(out.y + CONFIG.player.eyeHeight - crouch * SLIDE_EYE_DROP)
   }
 
   forward(out: THREE.Vector3): THREE.Vector3 {
@@ -154,6 +168,21 @@ export class Player {
     return { ...r, dealt: before - (r.health + r.armor) }
   }
 
+  /** Horizontal normal of the steepest wall touched by the last controller query, if any. */
+  private wallNormal(): { x: number; z: number } | null {
+    let best: { x: number; z: number } | null = null
+    let bestY = 0.7
+    for (let i = 0; i < this.controller.numComputedCollisions(); i += 1) {
+      const n = this.controller.computedCollision(i)?.normal1
+      if (!n || Math.abs(n.y) >= bestY) continue
+      const h = Math.hypot(n.x, n.z)
+      if (h < 1e-3) continue
+      bestY = Math.abs(n.y)
+      best = { x: n.x / h, z: n.z / h }
+    }
+    return best
+  }
+
   step(dt: number, intent: MoveIntent): { jumped: boolean; landed: number; slid: boolean } {
     const P = CONFIG.player
     this.prevPosition.copy(this.position)
@@ -168,6 +197,7 @@ export class Player {
     let landed = 0
     let slid = false
     this.slideCd = Math.max(0, this.slideCd - dt)
+    this.prevCrouch = this.crouch
     this.crouch += ((this.crouching ? 1 : 0) - this.crouch) * Math.min(1, dt * (this.crouching ? 14 : 9))
     if (!this.alive) {
       this.deadTime += dt
@@ -192,28 +222,52 @@ export class Player {
     const wx = intent.x * cos - intent.y * sin
     const wz = -intent.x * sin - intent.y * cos
     const moving = Math.abs(intent.x) + Math.abs(intent.y) > 0.01
+    // Speed we settle into once the slide is over (crouch-walk if C is still held).
+    const settle = () => (intent.crouch ? P.crouchSpeed : intent.sprint && intent.y > 0.3 ? P.sprintSpeed : P.walkSpeed) * this.speedScale
     if (this.sliding > 0) {
       this.sliding = Math.max(0, this.sliding - dt)
-      if (this.sliding === 0 || !this.grounded) {
-        if (this.sliding === 0) this.slideCd = SLIDE_COOLDOWN
+      if (this.grounded) {
+        // Glide: constant friction, gentle steering toward the wish direction, no input acceleration.
+        const v = Math.hypot(this.velocity.x, this.velocity.z)
+        const nv = Math.max(0, v - SLIDE_FRICTION * dt)
+        let a = Math.atan2(this.velocity.x, this.velocity.z)
+        if (moving) {
+          let d = Math.atan2(wx, wz) - a
+          d = Math.atan2(Math.sin(d), Math.cos(d))
+          a += Math.max(-SLIDE_STEER * dt, Math.min(SLIDE_STEER * dt, d))
+        }
+        this.velocity.x = Math.sin(a) * nv
+        this.velocity.z = Math.cos(a) * nv
+        // Done when it has slowed to the speed you will carry on at (no dip, no surge).
+        if (nv <= settle() + 0.05) this.sliding = 0
+      }
+      if (this.sliding === 0) {
+        this.slideCd = SLIDE_COOLDOWN
+        // Stand up in the same step the slide ends (unless C is held or there is no headroom).
+        if (!intent.crouch) this.setLow(false)
       }
     }
     this.sprinting = intent.sprint && intent.y > 0.3 && !intent.ads && this.grounded && !this.crouching
     const speed = this.crouching && this.sliding <= 0 ? Math.min(P.crouchSpeed, intent.ads ? P.adsSpeed : P.crouchSpeed) : intent.ads ? P.adsSpeed : this.sprinting ? P.sprintSpeed : P.walkSpeed
-    const tx = wx * speed * this.speedScale
-    const tz = wz * speed * this.speedScale
-    const slideK = this.sliding > 0 ? 0.06 + 0.2 * (1 - this.sliding / SLIDE_TIME) : 1
-    const accel = (this.grounded ? P.acceleration : P.acceleration * P.airControl) * slideK
-    const fric = this.grounded ? (moving ? 1 : 1.6) : 0.05
-    const dx = tx - this.velocity.x
-    const dz = tz - this.velocity.z
-    const dl = Math.hypot(dx, dz)
-    const maxDv = accel * dt * (moving ? 1 : fric)
-    if (dl > 0) {
-      const k = Math.min(1, maxDv / dl)
-      if (this.grounded || moving) {
-        this.velocity.x += dx * k
-        this.velocity.z += dz * k
+    if (this.sliding <= 0 || !this.grounded) {
+      const tx = wx * speed * this.speedScale
+      const tz = wz * speed * this.speedScale
+      const fric = this.grounded ? (moving ? 1 : 1.6) : 0.05
+      let accel = this.grounded ? P.acceleration : P.acceleration * P.airControl
+      // Over the target speed while still moving (after a slide, sprint released, crouching):
+      // ease down instead of snapping, so speed changes never read as a hitch.
+      const cur = Math.hypot(this.velocity.x, this.velocity.z)
+      if (this.grounded && moving && cur > speed * this.speedScale + 0.3) accel = Math.min(accel, SOFT_BRAKE + cur * 2)
+      const dx = tx - this.velocity.x
+      const dz = tz - this.velocity.z
+      const dl = Math.hypot(dx, dz)
+      const maxDv = accel * dt * (moving ? 1 : fric)
+      if (dl > 0) {
+        const k = Math.min(1, maxDv / dl)
+        if (this.grounded || moving) {
+          this.velocity.x += dx * k
+          this.velocity.z += dz * k
+        }
       }
     }
     // Jump with coyote time and buffer.
@@ -232,22 +286,37 @@ export class Player {
       jumped = true
     }
     this.velocity.y = Math.max(P.maxFall, this.velocity.y + P.gravity * dt)
+    // On the ground, move flat and let snap-to-ground follow slopes and steps: pushing into the
+    // floor every step makes Rapier's controller now and then return a blocked move on flat
+    // ground (the "slide freezes halfway" hitch).
+    const onFloor = this.grounded && this.velocity.y <= 0
     const desired = this.tmp.copy(this.velocity).multiplyScalar(dt)
-    this.controller.computeColliderMovement(this.collider, { x: desired.x, y: desired.y, z: desired.z }, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS)
-    const m = this.controller.computedMovement()
+    if (onFloor) desired.y = 0
+    const filter = RAPIER.QueryFilterFlags.EXCLUDE_SENSORS
+    this.controller.computeColliderMovement(this.collider, { x: desired.x, y: desired.y, z: desired.z }, filter)
+    let m = this.controller.computedMovement()
+    let wall = this.wallNormal()
+    const want = Math.hypot(desired.x, desired.z)
+    if (!wall && want > 1e-4 && Math.hypot(m.x, m.z) < want * 0.5) {
+      // Blocked without touching any wall: a floor contact glitch. Retry the step flat.
+      this.controller.computeColliderMovement(this.collider, { x: desired.x, y: 0, z: desired.z }, filter)
+      m = this.controller.computedMovement()
+      wall = this.wallNormal()
+    }
     const wasGrounded = this.grounded
     this.grounded = this.controller.computedGrounded()
     const t = this.body.translation()
     const next = { x: t.x + m.x, y: t.y + m.y, z: t.z + m.z }
     this.body.setNextKinematicTranslation(next)
-    // Collisions clip velocity (walls stop you, ceilings end jumps).
-    if (dt > 0) {
-      const ax = m.x / dt
-      const az = m.z / dt
-      if (Math.abs(ax) < Math.abs(this.velocity.x) - 0.01) this.velocity.x = ax
-      if (Math.abs(az) < Math.abs(this.velocity.z) - 0.01) this.velocity.z = az
-      if (this.velocity.y > 0 && m.y < desired.y * 0.5) this.velocity.y = 0
+    // Walls remove only the velocity going into them (you slide along them); ceilings end jumps.
+    if (wall) {
+      const into = this.velocity.x * wall.x + this.velocity.z * wall.z
+      if (into < 0) {
+        this.velocity.x -= wall.x * into
+        this.velocity.z -= wall.z * into
+      }
     }
+    if (dt > 0 && this.velocity.y > 0 && m.y < desired.y * 0.5) this.velocity.y = 0
     if (this.grounded) {
       if (!wasGrounded && this.velocity.y < -2) landed = -this.velocity.y
       if (this.velocity.y < 0) this.velocity.y = 0

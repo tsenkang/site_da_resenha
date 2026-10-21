@@ -104,8 +104,8 @@ const AURORA: MapDef = {
   look: {
     sky: [[0, '#3f86d6'], [0.3, '#7fb6ea'], [0.46, '#cfe2ef'], [0.5, '#f4e9d6'], [0.56, '#c9d4c0'], [1, '#8fa47a']],
     fog: '#d4e1ea', fogDensity: 0.0034,
-    sunDir: [-0.45, 0.82, 0.38], sunColor: '#fff0d6', sunIntensity: 2.3,
-    hemiSky: '#dcebff', hemiGround: '#c2a582', hemiIntensity: 1.25,
+    sunDir: [-0.45, 0.82, 0.38], sunColor: '#fff0d6', sunIntensity: 2.55,
+    hemiSky: '#cfe2ff', hemiGround: '#b89a78', hemiIntensity: 1.1,
     ridge: ['#93abbd', '#b6c7d4'], cloud: '#ffffff', cloudGlow: '#c9d6e2', sunGlow: '#fff2d6',
     stucco: ['#f2e6cf', '#ecd2ad', '#dfe7e2'], trim: ['#c45f3f', '#2f978f', '#4a6f9e'], roof: ['#c2593b', '#3a8d86', '#55698a'],
     floor: '#e2d6c0', street: '#cfc2aa', grass: '#9cb86a', night: false,
@@ -147,8 +147,8 @@ const MERCADO: MapDef = {
   look: {
     sky: [[0, '#38306b'], [0.25, '#8a5a8f'], [0.4, '#e8907a'], [0.48, '#ffc488'], [0.5, '#ffe0b0'], [0.56, '#c7a48a'], [1, '#8a6a58']],
     fog: '#f0c3a6', fogDensity: 0.0058,
-    sunDir: [0.78, 0.3, -0.55], sunColor: '#ffb57a', sunIntensity: 2.4,
-    hemiSky: '#ffd4b8', hemiGround: '#8c6a5c', hemiIntensity: 1.15,
+    sunDir: [0.78, 0.3, -0.55], sunColor: '#ffb57a', sunIntensity: 2.7,
+    hemiSky: '#e8c8c8', hemiGround: '#8c6a5c', hemiIntensity: 1.0,
     ridge: ['#9a7a8e', '#c49a9a'], cloud: '#ffd9c8', cloudGlow: '#e89a8a', sunGlow: '#ffc890',
     stucco: ['#f6d9c8', '#f2e2b0', '#eac9ba'], trim: ['#a8433a', '#3d7a8c', '#7a5aa0'], roof: ['#b8503a', '#5a7a9a', '#a85a40'],
     floor: '#e6d2bc', street: '#d2bba3', grass: '#a6a86a', night: false,

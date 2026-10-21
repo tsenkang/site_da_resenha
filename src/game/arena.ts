@@ -152,7 +152,9 @@ export class Arena {
     this.mats.farRoof = new THREE.MeshLambertMaterial({ color: '#c27053' })
     this.mats.cypress = new THREE.MeshLambertMaterial({ color: '#4f7a3f', flatShading: true })
     this.mats.paint = new THREE.MeshBasicMaterial({ map: sitePaintTexture(), transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
-    for (const k of ['lampPool', 'window', 'frame', 'paint', 'lampGlow', 'water', 'far0', 'far1', 'far2', 'far3', 'farRoof', 'cypress', 'grass', 'bloom0', 'bloom1', 'bloom2', 'bloom3']) this.noShadow.add(k)
+    // Contact shadow skirts (fake ambient occlusion where walls and props meet the ground).
+    this.mats.ao = new THREE.MeshBasicMaterial({ map: aoTexture(), color: L.night ? '#04060c' : '#1e140d', transparent: true, opacity: L.night ? 0.8 : 0.78, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 })
+    for (const k of ['ao', 'lampPool', 'window', 'frame', 'paint', 'lampGlow', 'water', 'far0', 'far1', 'far2', 'far3', 'farRoof', 'cypress', 'grass', 'bloom0', 'bloom1', 'bloom2', 'bloom3']) this.noShadow.add(k)
     this.barrierMat = new THREE.MeshBasicMaterial({ map: barrierTexture(), color: new THREE.Color(0.35, 1.6, 1.4), transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false })
     this.buildSky()
     this.buildLighting()
@@ -220,12 +222,38 @@ export class Arena {
       merged.computeBoundingSphere()
       const mesh = new THREE.Mesh(merged, this.mats[key])
       mesh.castShadow = !this.noShadow.has(key)
-      mesh.receiveShadow = key !== 'paint'
+      mesh.receiveShadow = key !== 'paint' && key !== 'ao'
       mesh.matrixAutoUpdate = false
       if (key === 'paint') mesh.renderOrder = 2
+      if (key === 'ao') mesh.renderOrder = 1
       this.group.add(mesh)
     }
     this.pending.clear()
+  }
+
+  /**
+   * Soft contact shadow on the ground along an edge from (ax, az) to (bx, bz); (nx, nz) points away
+   * from the obstacle. The gradient runs from dark at the base to clear `width` metres out.
+   */
+  private aoStrip(ax: number, az: number, bx: number, bz: number, nx: number, nz: number, width: number): void {
+    const len = Math.hypot(bx - ax, bz - az)
+    if (len < 0.05) return
+    const inset = 0.12
+    const g = new THREE.BufferGeometry()
+    const p = (x: number, z: number, k: number) => [x + nx * k, 0.012, z + nz * k]
+    g.setAttribute('position', new THREE.Float32BufferAttribute([...p(ax, az, -inset), ...p(bx, bz, -inset), ...p(bx, bz, width), ...p(ax, az, width)], 3))
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2))
+    g.setIndex([0, 1, 2, 0, 2, 3])
+    g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0], 3))
+    this.queue('ao', g, new THREE.Matrix4())
+  }
+
+  /** Contact shadow all around an axis-aligned footprint. */
+  private aoFootprint(x0: number, x1: number, z0: number, z1: number, width: number): void {
+    this.aoStrip(x0, z0, x1, z0, 0, -1, width)
+    this.aoStrip(x0, z1, x1, z1, 0, 1, width)
+    this.aoStrip(x0, z0, x0, z1, -1, 0, width)
+    this.aoStrip(x1, z0, x1, z1, 1, 0, width)
   }
 
   /** Solid box (bottom at y0) with a matching collider. */
@@ -358,6 +386,11 @@ export class Arena {
         this.box('stone', px, 0, pz, alongX ? 0.9 : 0.5, h + 0.2, alongX ? 0.5 : 0.9, { collide: false, tile: 2 })
       }
     }
+    // Contact shadow along the inner faces of the town wall.
+    this.aoStrip(-this.HX, -this.HZ + 1, this.HX, -this.HZ + 1, 0, 1, 2.8)
+    this.aoStrip(-this.HX, this.HZ - 1, this.HX, this.HZ - 1, 0, -1, 2.8)
+    this.aoStrip(-this.HX + 1, -this.HZ, -this.HX + 1, this.HZ, 1, 0, 2.8)
+    this.aoStrip(this.HX - 1, -this.HZ, this.HX - 1, this.HZ, -1, 0, 2.8)
     wall(0, -this.HZ - t / 2 + 1, this.HX * 2 + 2 * t, t)
     wall(0, this.HZ + t / 2 - 1, this.HX * 2 + 2 * t, t)
     wall(-this.HX - t / 2 + 1, 0, t, this.HZ * 2)
@@ -407,6 +440,7 @@ export class Arena {
         else if (i % 2 === 0) this.facade(f.along, f.at, t, 1.9, 1.3, 1.5, f.normal, false, style, i + 1)
       }
     }
+    this.aoFootprint(x0, x1, z0, z1, 2.3)
     this.minimap.push({ x0, x1, z0, z1, kind: 'building' })
   }
 
@@ -441,6 +475,7 @@ export class Arena {
 
   /** Cover piece: crates (planks), stone planters with shrubs, metal generators, the Mid fountain. */
   private cover(x: number, z: number, w: number, d: number, h: number, kind: number): void {
+    if (h > 0.4) this.aoFootprint(x - w / 2, x + w / 2, z - d / 2, z + d / 2, Math.min(1.5, 0.5 + h * 0.4))
     if (kind === 0) {
       const unit = Math.min(1.6, h)
       const turn = (this.rand() - 0.5) * 0.2
@@ -727,6 +762,22 @@ function canvasTex(size: number, draw: (g: CanvasRenderingContext2D, s: number) 
   t.wrapS = t.wrapT = THREE.RepeatWrapping
   if (color) t.colorSpace = THREE.SRGBColorSpace
   t.anisotropy = 4
+  return t
+}
+
+/** Contact-shadow ramp: opaque at the base (v = 0) easing out to clear (v = 1). */
+function aoTexture(): THREE.CanvasTexture {
+  const t = canvasTex(4, (g, s) => {
+    const grad = g.createLinearGradient(0, 0, 0, 64)
+    grad.addColorStop(0, 'rgba(255,255,255,1)')
+    grad.addColorStop(0.25, 'rgba(255,255,255,0.72)')
+    grad.addColorStop(0.6, 'rgba(255,255,255,0.26)')
+    grad.addColorStop(1, 'rgba(255,255,255,0)')
+    g.fillStyle = grad
+    g.fillRect(0, 0, s, 64)
+  }, false, 64)
+  t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping
+  t.flipY = false
   return t
 }
 

@@ -33,7 +33,8 @@ export class GameLoop {
     this.last = performance.now()
     const frame = (now: number) => {
       if (!this.running) return
-      const frameSeconds = Math.min((now - this.last) / 1000, this.maxFrameSeconds)
+      // rAF timestamps can precede the performance.now() taken at start: never step backwards.
+      const frameSeconds = Math.max(0, Math.min((now - this.last) / 1000, this.maxFrameSeconds))
       this.last = now
       if (!this.paused) {
         this.accumulator += frameSeconds

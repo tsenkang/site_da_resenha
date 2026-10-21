@@ -646,6 +646,7 @@ export class Game implements CombatWorld {
   private buildArena(id: MapId): Arena {
     const a = new Arena(this.scene, this.physics, this.lib, MAPS[id], MAP_ORIGIN[id], this.tags)
     a.sun.shadow.mapSize.set(this.renderer.shadowMapSize, this.renderer.shadowMapSize)
+    a.sun.shadow.radius = this.renderer.shadowMapSize >= 2048 ? 2.4 : 1.4
     this.arenas.set(id, a)
     return a
   }
@@ -2046,6 +2047,7 @@ export class Game implements CombatWorld {
   // ─── presentation ─────────────────────────────────────────────────────
   render(alpha: number, frameDt: number): void {
     const cam = this.camera
+    this.lastFrameDt = Math.max(0, Math.min(0.1, frameDt))
     const look = this.mode === 'playing' || this.mode === 'countdown' ? this.input.takeLook() : (this.input.takeLook(), { x: 0, y: 0 })
     if (this.player.alive && (this.mode === 'playing' || this.mode === 'countdown')) {
       const adsK = 1 - this.arsenal.ads * 0.35
@@ -2099,7 +2101,8 @@ export class Game implements CombatWorld {
       // Spectate a living teammate through their eyes.
       const b = this.tactical.spectateTarget()!
       for (const a of this.tactical.allies) if (a.alive) a.parts.root.visible = a !== b
-      cam.position.copy(b.eye)
+      // Interpolated body position (b.eye is the fixed-step one and judders on fast displays).
+      cam.position.copy(b.parts.root.position).setY(b.parts.root.position.y + 1.6 * b.scale)
       const aim = b.aimDir
       cam.rotation.set(Math.asin(THREE.MathUtils.clamp(aim.y, -1, 1)), Math.atan2(-aim.x, -aim.z), 0, 'YXZ')
       this.fov(this.fovSetting)
@@ -2200,12 +2203,14 @@ export class Game implements CombatWorld {
     mesh.instanceColor!.needsUpdate = true
   }
 
+  private lastFrameDt = 1 / 60
   private fov(horizontalDeg: number, scale = 1): void {
     const cam = this.camera
     const v = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(horizontalDeg) / 2) / (16 / 9))
     const target = THREE.MathUtils.radToDeg(v) * scale
     if (Math.abs(cam.fov - target) > 0.01) {
-      cam.fov += (target - cam.fov) * 0.35
+      // Same easing at any frame rate (≈0.35 per frame at 60 FPS).
+      cam.fov += (target - cam.fov) * (1 - Math.exp(-this.lastFrameDt * 26))
       cam.updateProjectionMatrix()
     }
   }
@@ -2284,6 +2289,7 @@ export class Game implements CombatWorld {
       a.sun.shadow.map?.dispose()
       a.sun.shadow.map = null
       a.sun.shadow.mapSize.set(this.renderer.shadowMapSize, this.renderer.shadowMapSize)
+      a.sun.shadow.radius = this.renderer.shadowMapSize >= 2048 ? 2.4 : 1.4
     }
     this.fx.density = this.renderer.particleDensity
   }

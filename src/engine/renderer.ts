@@ -16,7 +16,7 @@ type Preset = { pixelRatio: number; minPixelRatio: number; shadows: boolean; sha
 export const QUALITY_PRESETS: Record<Quality, Preset> = {
   low: { pixelRatio: 0.75, minPixelRatio: 0.5, shadows: false, shadowMap: 512, bloom: false, post: false, samples: 0, particles: 0.3 },
   medium: { pixelRatio: 0.9, minPixelRatio: 0.6, shadows: true, shadowMap: 1024, bloom: false, post: true, samples: 2, particles: 0.55 },
-  high: { pixelRatio: 1, minPixelRatio: 0.75, shadows: true, shadowMap: 2048, bloom: false, post: true, samples: 4, particles: 0.8 },
+  high: { pixelRatio: 1, minPixelRatio: 0.75, shadows: true, shadowMap: 2048, bloom: true, post: true, samples: 4, particles: 0.8 },
 }
 
 /** GPU names that mean an integrated/mobile chip (Chromebooks, old laptops) or software rendering. */
@@ -43,7 +43,10 @@ function gpuName(): string {
   }
 }
 
-/** Final grade in display space: contrast, warm/teal split, vignette, grain, damage tint (no chromatic aberration). */
+/**
+ * Final grade in display space: light sharpening, vibrance, contrast, warm/teal split, vignette,
+ * grain and damage tint (no chromatic aberration).
+ */
 const GradeShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
@@ -53,8 +56,12 @@ const GradeShader = {
     flash: { value: 0 },
     overdrive: { value: 0 },
     vignette: { value: 0.32 },
-    grain: { value: 0.035 },
+    grain: { value: 0.022 },
+    /** Sharpening strength (unsharp mask) and vibrance (saturation that spares already-vivid colours). */
+    sharpen: { value: 0.35 },
+    vibrance: { value: 0.28 },
     resolution: { value: new THREE.Vector2(1, 1) },
+    texel: { value: new THREE.Vector2(1, 1) },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -62,8 +69,8 @@ const GradeShader = {
   `,
   fragmentShader: /* glsl */ `
     uniform sampler2D tDiffuse;
-    uniform float time, damage, lowHealth, flash, vignette, grain, overdrive;
-    uniform vec2 resolution;
+    uniform float time, damage, lowHealth, flash, vignette, grain, overdrive, sharpen, vibrance;
+    uniform vec2 resolution, texel;
     varying vec2 vUv;
     float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     float vnoise(vec2 p) {
@@ -75,6 +82,16 @@ const GradeShader = {
       float r2 = dot(c, c);
       // Single crisp sample: no chromatic aberration / RGB split (it read as double vision in heavy fights).
       vec3 col = texture2D(tDiffuse, vUv).rgb;
+      // Crisp edges: 4-tap unsharp mask (cheap, restores detail lost to MSAA and dynamic resolution).
+      vec3 blur = texture2D(tDiffuse, vUv + vec2(texel.x, 0.0)).rgb + texture2D(tDiffuse, vUv - vec2(texel.x, 0.0)).rgb
+        + texture2D(tDiffuse, vUv + vec2(0.0, texel.y)).rgb + texture2D(tDiffuse, vUv - vec2(0.0, texel.y)).rgb;
+      col += (col - blur * 0.25) * sharpen;
+      // Vibrance: lift dull colours more than saturated ones (clean, punchy, not neon).
+      col = clamp(col, 0.0, 1.0);
+      float mx = max(col.r, max(col.g, col.b));
+      float mn = min(col.r, min(col.g, col.b));
+      float l0 = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l0), col, 1.0 + vibrance * (1.0 - (mx - mn)));
       // Gentle S-curve contrast + split tone (warm highlights, cool shadows).
       col = clamp(col, 0.0, 1.0);
       col = mix(col, col * col * (3.0 - 2.0 * col), 0.22);
@@ -172,6 +189,7 @@ export class Renderer {
   private composer?: EffectComposer
   private bloom?: UnrealBloomPass
   private grade?: ShaderPass
+  private readonly bufSize = new THREE.Vector2()
   private smoke?: THREE.Mesh
   private preset: Preset
   private scene?: THREE.Scene
@@ -270,7 +288,8 @@ export class Renderer {
     if (this.smoke) this.composer.addPass(new HalfResSmokePass(this.smoke, camera))
     if (this.preset.bloom) {
       const css = this.gl.getSize(new THREE.Vector2())
-      this.bloom = new UnrealBloomPass(css, 0.55, 0.55, 0.92)
+      // Half resolution, high threshold: only lamps, lit windows, muzzle flashes and the sun glow.
+      this.bloom = new UnrealBloomPass(css.multiplyScalar(0.5), 0.32, 0.45, 0.93)
       this.composer.addPass(this.bloom)
     }
     this.composer.addPass(new OutputPass())
@@ -329,6 +348,8 @@ export class Renderer {
       u.flash.value = this.fx.flash
       u.overdrive.value = this.fx.overdrive
       u.resolution.value.set(w, h)
+      const buf = this.gl.getDrawingBufferSize(this.bufSize)
+      u.texel.value.set(1 / Math.max(1, buf.x), 1 / Math.max(1, buf.y))
     }
     composer.render()
   }
