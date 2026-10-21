@@ -475,7 +475,8 @@ export class Ui {
     const gap = Math.max(4, Math.min(80, Math.tan(h.spread) * pxPerRad))
     E.xhair.style.setProperty('--gap', `${gap.toFixed(1)}px`)
     // Rifle (red dot) and shotgun (ghost ring) aim through their real sights: no HUD reticle at ADS.
-    const sighted = h.weapon !== 'rocket'
+    // Rifle red dot / shotgun ring are real sights; the pistol keeps the HUD crosshair at ADS.
+    const sighted = h.weapon === 'rifle' || h.weapon === 'shotgun'
     const adsHide = sighted ? Math.max(0, 1 - h.ads * 8) : Math.max(0, 1 - h.ads * 1.6)
     E.xhair.style.opacity = String(h.alive ? adsHide * (h.sprinting ? 0.35 : 1) : 0)
     E['od-ring'].style.opacity = ons && h.alive ? String(sighted ? adsHide : 0.35 + (1 - h.ads) * 0.65) : '0'

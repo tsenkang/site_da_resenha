@@ -657,3 +657,10 @@ html, body { background: #0f1923; }
 .btn.primary { background: var(--amber); }
 .btn.primary:hover { background: #ff5a68; }
 .title-left .btn { min-width: 420px; }
+.results { max-height: 94vh; overflow: auto; }
+.r-board tr.me td { background: rgba(60, 224, 196, 0.18); color: #fff; }
+.stat b { color: var(--text); }
+.stat.big b { color: var(--amber); }
+.stat { background: rgba(236, 232, 225, 0.05); box-shadow: inset 0 0 0 1px rgba(236, 232, 225, 0.1); }
+.stat.big { background: rgba(255, 70, 85, 0.1); box-shadow: inset 0 0 0 1px rgba(255, 70, 85, 0.45); }
+.stat.big b { text-shadow: none; font-family: var(--title); font-weight: 400; font-size: 54px; }

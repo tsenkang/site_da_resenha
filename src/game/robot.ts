@@ -303,7 +303,9 @@ export function buildRobot(asset: RobotAsset, look: RobotLook, visorColor: strin
     const basis = handBasis(f, palm, new THREE.Quaternion())
     handRel[side].copy(basis.invert()).multiply(hand.getWorldQuaternion(new THREE.Quaternion()))
   }
-  const h = held === 'rifle' || held === 'shotgun' ? (vm[held] ? heldTripo(vm[held]!, held) : heldProcedural('minigun')) : heldProcedural(held)
+  // Third-person guns use the low-poly copies (3k triangles instead of 19k per character).
+  const heldSrc = held === 'rifle' || held === 'shotgun' ? vm[held === 'rifle' ? 'rifleLod' : 'shotgunLod'] ?? vm[held] : undefined
+  const h = held === 'rifle' || held === 'shotgun' ? (heldSrc ? heldTripo(heldSrc, held) : heldProcedural('minigun')) : heldProcedural(held)
   const gun = h.group
   gun.scale.setScalar(scale)
   root.add(gun)
@@ -609,5 +611,37 @@ export class RobotAnimator {
     if (t > 3) p.model.position.y -= 0.5 * p.scale * dt
     p.visor.emissiveIntensity = Math.max(0, 4 - t * 6)
     p.core.emissiveIntensity = Math.max(0, 1.4 - t * 2)
+  }
+}
+
+/**
+ * Enemy highlight: an inverted-hull copy of every skinned mesh, pushed out along the view-space
+ * normal by a constant screen-space width (`width` radians), so enemies read at any distance like
+ * the red outline of a tactical shooter. Shares geometry and skeleton: one extra draw per mesh.
+ */
+export function addOutline(root: THREE.Object3D, color: string, width = 0.0032): void {
+  const meshes: THREE.SkinnedMesh[] = []
+  root.traverse(o => {
+    const m = o as THREE.SkinnedMesh
+    if (m.isSkinnedMesh) meshes.push(m)
+  })
+  const mat = new THREE.MeshBasicMaterial({ color, side: THREE.BackSide, fog: false })
+  mat.onBeforeCompile = shader => {
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `#include <project_vertex>
+      vec3 outlineN = normalize( normalMatrix * objectNormal );
+      gl_Position = projectionMatrix * ( mvPosition + vec4( outlineN * ${width.toFixed(5)} * -mvPosition.z, 0.0 ) );`,
+    )
+  }
+  mat.customProgramCacheKey = () => `outline${width}`
+  for (const m of meshes) {
+    const o = m.clone() as THREE.SkinnedMesh
+    o.material = mat
+    o.castShadow = false
+    o.receiveShadow = false
+    o.frustumCulled = false
+    o.name = 'outline'
+    m.parent?.add(o)
   }
 }

@@ -16,7 +16,7 @@ import {
 } from './onslaught'
 import { Player } from './player'
 import { Pickups, Props } from './props'
-import { wornPaint, type RobotLook } from './robot'
+import { addOutline, wornPaint, type RobotLook } from './robot'
 import { PlayerBody } from './playerbody'
 import { computeScore, createMatch, leader, placement, recordShot, registerKill, splashDamage, standings, tick, type MatchState, type Medal } from './rules'
 import type { Staged, StageId } from './stages'
@@ -437,6 +437,7 @@ export class Game implements CombatWorld {
     let b = this.tacBots.get(id)
     if (!b) {
       b = team === 0 ? this.makeBot(id, name, 'striker', '#1f6f73', '#48f0d8', 'operator') : this.makeBot(id, name, 'striker', '#7a2a2a', '#ff4655', 'breacher')
+      if (team === 1) addOutline(b.parts.root, '#ff4655')
       this.tacBots.set(id, b)
     }
     b.team = team
@@ -2008,8 +2009,30 @@ export class Game implements CombatWorld {
     this.fx.update(dt)
     this.arena.update(this.time)
     for (const f of this.arena.fires) this.fx.fire(f.pos, dt, 1)
+    this.cullBots()
     this.renderer.render(this.scene, cam, this.time)
     this.input.endFrame()
+  }
+
+  private readonly frustum = new THREE.Frustum()
+  private readonly projView = new THREE.Matrix4()
+  private readonly cullSphere = new THREE.Sphere()
+  /**
+   * Skinned characters have frustum culling off (their bind-pose bounds are wrong once animated),
+   * so cull whole characters here with a body-sized sphere: off-screen bots cost nothing.
+   */
+  private cullBots(): void {
+    const cam = this.camera
+    this.projView.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse)
+    this.frustum.setFromProjectionMatrix(this.projView)
+    for (const b of this.bots) {
+      const root = b.parts.root
+      if (!root.visible) continue
+      this.cullSphere.center.copy(root.position).setY(root.position.y + b.scale)
+      this.cullSphere.radius = 1.7 * b.scale
+      const vis = this.frustum.intersectsSphere(this.cullSphere)
+      for (const c of root.children) c.visible = vis
+    }
   }
 
   private readonly shardM = new THREE.Matrix4()

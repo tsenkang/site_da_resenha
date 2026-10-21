@@ -302,7 +302,7 @@ export function buildPistol(flashTex: THREE.Texture, flameTex: THREE.Texture, wi
   flash.position.copy(muzzle.position)
   root.add(flash)
   if (withArms) addArms(root, { right: [0, -0.05, 0.03], left: [-0.03, -0.06, -0.01] })
-  return { root, muzzle, eject, mag, magRest: mag.position.clone(), sightY: 0.055, sightZ: 0.02, flash, hip: new THREE.Vector3(0.13, -0.15, -0.34), ads: { x: 0, z: -0.3 } }
+  return { root, muzzle, eject, mag, magRest: mag.position.clone(), sightY: 0.055, sightZ: 0.02, flash, hip: new THREE.Vector3(0.13, -0.16, -0.44), ads: { x: 0.02, y: -0.1, z: -0.48 } }
 }
 
 export function buildShotgun(flashTex: THREE.Texture, flameTex: THREE.Texture): ViewModel {

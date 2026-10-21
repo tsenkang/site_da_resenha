@@ -9,7 +9,8 @@ import { buildPistol, flashGroup, redDotTexture, viewmodelMaterial, type ViewMod
  * Moving parts (magazine, pump) are split out of the single scanned mesh by triangle region and
  * share its vertex buffers, so they cost one extra draw call each and no extra memory.
  */
-export type VmAssets = Partial<Record<'rifle' | 'shotgun' | 'launcher' | 'rocket' | 'armR' | 'armL', THREE.Object3D>>
+/** First-person scans plus low-poly `*Lod` copies that third-person characters hold. */
+export type VmAssets = Partial<Record<'rifle' | 'shotgun' | 'launcher' | 'rocket' | 'armR' | 'armL' | 'rifleLod' | 'shotgunLod', THREE.Object3D>>
 
 type V3 = [number, number, number]
 type Baked = { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial }
@@ -124,7 +125,7 @@ export const ARM_POSES: Record<'rifle' | 'shotgun' | 'rocket' | 'pistol', { righ
   rifle: { right: { at: [0.005, -0.1, 0.06], rot: [0.75, 0.35, -0.6] }, left: { at: [-0.01, -0.045, -0.33], rot: [0.9, -0.55, 0.63] } },
   shotgun: { right: { at: [0.005, -0.09, 0.12], rot: [0.75, 0.35, -0.6] }, left: { at: [-0.005, -0.035, 0], rot: [0.9, -0.55, 0.63] } },
   rocket: { right: { at: [0.005, -0.15, 0.04], rot: [0.75, 0.35, -0.6] }, left: { at: [0.005, -0.14, -0.17], rot: [0.8, -0.35, -0.2] } },
-  pistol: { right: { at: [0.004, -0.058, 0.04], rot: [0.75, 0.35, -0.6] }, left: { at: [-0.03, -0.07, 0.02], rot: [0.85, -0.6, 0.75] } },
+  pistol: { right: { at: [0.004, -0.07, 0.05], rot: [0.62, 0.35, -0.6] }, left: { at: [-0.022, -0.1, 0.05], rot: [0.95, -0.5, 0.9] } },
 }
 
 // ─── weapons ────────────────────────────────────────────────────────────

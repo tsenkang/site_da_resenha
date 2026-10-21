@@ -71,6 +71,8 @@ export class StageLoader {
         return [
           vm('rifle', 'rifle'),
           vm('shotgun', 'shotgun'),
+          vm('rifleLod', 'rifle_lod'),
+          vm('shotgunLod', 'shotgun_lod'),
           vm('armR', 'arm_r'),
           vm('armL', 'arm_l'),
           char('operator'),
