@@ -69,7 +69,13 @@ async function run(context, button, label, n) {
   const before = await state(page)
   await page.keyboard.down('KeyW')
   await page.evaluate(() => window.__game.input.debugHeld.add('fire'))
+  // Software GL renders ~1 frame/s and the loop advances at most 0.25 s of game time per frame, so
+  // wait for the game itself (a shot fired and some distance walked) rather than a fixed delay.
   await page.waitForTimeout(3000)
+  await page.waitForFunction(b => {
+    const g = window.__game.game
+    return g.shots + g.match.stats.shots > b.shots && Math.hypot(g.player.position.x - b.pos.x, g.player.position.z - b.pos.z) > 1
+  }, before, { timeout: 30_000 }).catch(() => {})
   await page.evaluate(() => window.__game.input.debugHeld.delete('fire'))
   await page.keyboard.up('KeyW')
   await page.screenshot({ path: `${out}/smoke-${String(2 + n * 2).padStart(2, '0')}-${label}-play.png` })
