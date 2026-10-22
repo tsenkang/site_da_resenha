@@ -52,7 +52,7 @@ O Render define `PORT` sozinho.
   instâncias, senão jogadores da mesma sala podem cair em servidores diferentes. Um deploy
   novo encerra as partidas em andamento.
 - **Conferir se está no ar:** `https://SEU-ENDERECO/health` responde
-  `{"ok":true,"rooms":0,"protocol":1}`.
+  `{"ok":true,"rooms":0,"protocol":2}`.
 
 ## Rodar igual ao Render no seu PC
 
