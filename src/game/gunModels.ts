@@ -604,10 +604,13 @@ function buildDualies(A: VmAssets, flashTex: THREE.Texture, flameTex: THREE.Text
   right.root.rotation.z = -0.08
   left.root.position.set(-0.165, 0, 0)
   left.root.rotation.z = 0.08
+  // The left gun is the right one mirrored, hand included: the left arm model is posed to wrap a
+  // handguard, so on a pistol grip it read as a second, wrong hand.
+  left.root.scale.x = -1
   root.add(right.root, left.root)
-  if (A.armR && A.armL) {
+  if (A.armR) {
     right.root.add(buildArm(A.armR, 'armR', { at: [0.004, -0.07, 0.05], rot: POSE_PISTOL.right }))
-    left.root.add(buildArm(A.armL, 'armL', { at: [-0.004, -0.07, 0.05], rot: [0.62, -0.35, 0.6] }))
+    left.root.add(buildArm(A.armR, 'armL', { at: [0.004, -0.07, 0.05], rot: POSE_PISTOL.right }))
   } else {
     proceduralArms(right.root, { right: [0, -0.05, 0.03], left: [0.4, -0.6, 0.8] })
   }

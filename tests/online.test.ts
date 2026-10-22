@@ -116,6 +116,35 @@ describe('online room rules', () => {
     expect(b.inbox.length).toBe(before)
   })
 
+  it('a player who quits mid-match is out for good: gone from snapshots, never revived', () => {
+    const a = fakeConn('a')
+    const c = fakeConn('c')
+    const b = fakeConn('b')
+    const room = new Room('ROOMQ', 2, a)
+    room.join(b)
+    room.join(c)
+    room.handle('c', { t: 'team', team: 0 })
+    room.handle('b', { t: 'ready', ready: true })
+    room.handle('c', { t: 'ready', ready: true })
+    room.handle('a', { t: 'start' })
+    for (let i = 0; i < 25 * 20; i += 1) room.tick(1 / 20)
+    for (const id of ['a', 'b', 'c']) room.handle(id, { t: 'frame', f: frame([id === 'b' ? 30 : 0, 0, id === 'c' ? 5 : 0]) })
+    const rc = room.state!.players.findIndex(p => p.name === 'C')
+    room.leave('c')
+    expect(room.state!.players[rc].alive).toBe(false)
+    expect(last(a, 'left')).toMatchObject({ id: 'c', name: 'C' })
+    room.tick(0.1)
+    expect(last(a, 'snapshot')!.s.players.map(p => p.id)).not.toContain('c')
+    // Next round: a and b come back, c stays out.
+    const round = room.state!.round
+    for (let i = 0; i < 20 * 200 && room.state!.round === round; i += 1) room.tick(1 / 20)
+    expect(room.state!.round).toBe(round + 1)
+    expect(room.state!.players[rc].alive).toBe(false)
+    expect(room.state!.players.filter(p => p.alive).map(p => p.name).sort()).toEqual(['A', 'B'])
+    // Hits on the player who left are ignored instead of crashing the room.
+    room.handle('a', { t: 'hit', h: { target: 'c', damage: 20, headshot: false, weapon: 'glock', distance: 5 } })
+  })
+
   it('caps hits that land in the same server tick at the fire budget', () => {
     const { room, a, b } = combatRoom()
     room.handle('a', { t: 'frame', f: frame([0, 0, 10]) })

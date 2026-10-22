@@ -162,6 +162,12 @@ export class TacticalMatch {
       c.on('grenade', m => {
         if (m.by !== net.me) g.explode(this.fromNet(m.at), 5.2, 0, -1, 'grenade')
       }),
+      c.on('left', m => {
+        // Their avatar vanishes at once instead of standing frozen where they were.
+        const b = this.bots.find(x => x.id === net.local(m.id))
+        if (b?.alive) b.hide()
+        g.events.message(`${m.name} SAIU DA PARTIDA`, 'warn')
+      }),
     )
     // Our own state goes out at the network rate while alive.
     c.streamFrames(() => {
@@ -189,6 +195,10 @@ export class TacticalMatch {
       this.spikeMesh.visible = this.state.phase !== 'roundEnd' || next.spike.planted
     } else this.spikeMesh.visible = false
     if (events.some(e => e.type === 'roundStart')) return
+    // The server is the authority on who is alive: anyone it has out but we still draw standing
+    // (a lost kill message, a disconnect) goes down here.
+    for (const b of this.bots) if (b.alive && next.players.find(p => p.id === b.id)?.alive === false) this.game.killBotSilently(b)
+    if (this.game.player.alive && next.players.find(p => p.id === 0)?.alive === false) this.game.killPlayerSilently()
     const l = this.me.loadout
     const g = this.game
     if (l.primary !== before.primary || l.sidearm !== before.sidearm) g.arsenal.setLoadout(l.primary, false, l.sidearm)

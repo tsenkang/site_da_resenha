@@ -66,6 +66,8 @@ export class Room {
   private readonly toRules = new Map<string, number>()
   private readonly toNet = new Map<number, string>()
   private readonly live = new Map<string, Live>()
+  /** Rules ids of players who left mid-match: out of play for every remaining round. */
+  private readonly gone = new Set<number>()
   private time = 0
   private tickN = 0
   private snapT = 0
@@ -103,9 +105,16 @@ export class Room {
       return
     }
     this.lobby = next
-    // A player who leaves mid-match counts as dead for the round.
+    // A player who leaves mid-match is out for the rest of it (like an open slot): dead now, never
+    // revived at the next round start, and no longer in the snapshots everyone else draws.
     const rid = this.toRules.get(id)
-    if (this.state && rid !== undefined) this.kill(-1, rid)
+    if (this.state && rid !== undefined && !this.gone.has(rid)) {
+      this.gone.add(rid)
+      const name = this.state.players[rid]?.name ?? ''
+      if (this.state.players[rid]?.alive) this.kill(-1, rid)
+      this.live.delete(id)
+      this.broadcast({ t: 'left', id, name })
+    }
     this.broadcastLobby()
   }
 
@@ -230,7 +239,7 @@ export class Room {
     if (sl.fireBudget < lim.interval - 1e-6) return
     if (distance > lim.range) return
     const sf = sl.frame
-    const tf = this.live.get(target)!.frame
+    const tf = this.live.get(target)?.frame
     if (sf && tf) {
       const real = Math.hypot(sf.pos[0] - tf.pos[0], sf.pos[1] - tf.pos[1], sf.pos[2] - tf.pos[2])
       if (Math.abs(real - distance) > POS_TOLERANCE + real * 0.15) return
@@ -359,11 +368,11 @@ export class Room {
     }
   }
 
-  /** Placeholder slots start each round out of play (no kill credit, no credits change). */
+  /** Placeholder slots and players who left start each round out of play (no kill credit). */
   private eliminatePlaceholders(): void {
-    for (const m of this.lobby.members) {
-      if (!m.bot || !this.state) continue
-      this.state = registerKill(this.state, -1, this.toRules.get(m.id)!).state
+    const out = [...this.lobby.members.filter(m => m.bot).map(m => this.toRules.get(m.id)!), ...this.gone]
+    for (const rid of out) {
+      if (this.state?.players[rid]?.alive) this.state = registerKill(this.state, -1, rid).state
     }
   }
 

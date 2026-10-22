@@ -92,6 +92,8 @@ export type ServerMessage =
   | { t: 'grenade'; by: string; at: Vec3 }
   | { t: 'kill'; killer: string; victim: string; weapon: LoadoutWeapon | 'grenade'; headshot: boolean }
   | { t: 'buyResult'; item: ShopItem; ok: boolean; reason?: string }
+  /** A player left mid-match: out for the rest of it (their avatar disappears). */
+  | { t: 'left'; id: string; name: string }
   | { t: 'pong'; at: number; server: number }
 
 /** `closed` is emitted locally by the client when the socket drops (never sent by the server). */
