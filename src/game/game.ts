@@ -1013,13 +1013,14 @@ export class Game implements CombatWorld {
   }
 
   /** `net`: play the tactical mode online, with the server as the authority. */
-  start(mode: GameMode = this.gameMode, net: NetLink | null = null): void {
+  /** `map`: play on another map (practice; never ranked). */
+  start(mode: GameMode = this.gameMode, net: NetLink | null = null, map: MapId | null = null): void {
     tuning.activate('run')
     this.audio.restoreWorld()
     this.audio.setPaused(false)
     this.tactical?.dispose()
     this.tactical = null
-    this.useMap(net ? net.map : MODE_MAP[mode])
+    this.useMap(net ? net.map : (map ?? MODE_MAP[mode]))
     this.clearWorld()
     this.gameMode = mode
     const tac = mode === 'tactical'
@@ -1032,7 +1033,7 @@ export class Game implements CombatWorld {
     this.player.maxHealth = CONFIG.player.maxHealth
     if (mode === 'deathmatch') this.ensureDmSentinels()
     const count = Math.min(CONFIG.bots.count, this.dmBots.length)
-    this.match = { ...createMatch(this.dmBots.slice(0, count).map(b => b.name)), unranked: tuning.unranked }
+    this.match = { ...createMatch(this.dmBots.slice(0, count).map(b => b.name)), unranked: tuning.unranked || !!map }
     this.renderer.fx.damage = 0
     this.renderer.fx.lowHealth = 0
     this.perks = {}

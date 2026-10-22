@@ -11,11 +11,15 @@ import type { BuyResult, ShopItem } from '../game/tactical'
 import type { MapRect, Site } from '../game/arena'
 import type { MinimapState } from '../game/tacticalMatch'
 import { OnlineView, type OnlineActions } from './online'
+import { MAPS, type MapId } from '../game/maps'
+import { ONLINE_MAPS } from '../net/protocol'
 
-export type Screen = 'boot' | 'title' | 'hud' | 'pause' | 'settings' | 'controls' | 'results' | 'online'
+export type Screen = 'boot' | 'title' | 'hud' | 'pause' | 'settings' | 'controls' | 'results' | 'online' | 'maps'
 
 export type UiActions = {
   play(mode: GameMode): void
+  /** Practice deathmatch against bots on any map. */
+  playMap(map: MapId): void
   resume(): void
   restart(): void
   quit(): void
@@ -116,6 +120,7 @@ export class Ui {
     this.buildResults()
     this.online = new OnlineView(actions.online, (l, f, c, s) => this.button(l, f, c, s), () => this.show('title'))
     this.add('online', this.online.root)
+    this.buildMaps()
     this.sparks = new Sparks(this.root)
     window.addEventListener('keydown', e => {
       if (e.code === 'Escape' && (this.screen === 'settings' || this.screen === 'controls')) this.back()
@@ -261,10 +266,29 @@ export class Ui {
       this.button('MATA-MATA', () => this.actions.play('deathmatch'), '', 'Mercado · 6 rivais · primeiro a 20'),
       this.button('SOBREVIVÊNCIA', () => this.actions.play('onslaught'), '', 'Fortaleza · 8 ondas · chefe final'),
       online,
+      this.button('MAPAS', () => this.show('maps'), '', 'treine em qualquer mapa contra bots'),
       this.button(this.t.t('menu.controls'), () => this.push('controls')),
       this.button(this.t.t('menu.settings'), () => this.push('settings')),
     )
     this.add('title', n)
+  }
+
+  /** Practice: every map, deathmatch against bots (the online maps included, no server needed). */
+  private buildMaps(): void {
+    const n = el('div', 'panel-screen', `<div class="panel panel-cut wide online"><h2>MAPAS</h2><div class="ol-title">MATA-MATA CONTRA BOTS <small>treino, fora do placar</small></div><div class="ol-maps"></div><div class="menu row-end"></div></div>`)
+    const ids: MapId[] = [...ONLINE_MAPS, 'mercado', 'fortaleza']
+    for (const id of ids) {
+      const def = MAPS[id]
+      const b = el('button', `ol-map map-${id}`, `<b>${def.name}</b><small>${def.place ?? (id === 'mercado' ? 'Mata-mata' : id === 'fortaleza' ? 'Sobrevivência' : '')}</small>`)
+      b.addEventListener('click', () => {
+        this.audio.unlock()
+        this.audio.play('ui_confirm', { volume: 0.7, jitter: 0 })
+        this.actions.playMap(id)
+      })
+      n.querySelector('.ol-maps')!.appendChild(b)
+    }
+    n.querySelector('.menu')!.append(this.button(this.t.t('menu.back'), () => this.show('title')))
+    this.add('maps', n)
   }
 
   private refreshTitle(): void {

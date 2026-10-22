@@ -1251,7 +1251,9 @@ export class Arena {
         const x = -this.HX + cx + 0.5
         const z = -this.HZ + cz + 0.5
         const c = sample(x + ox, z + oz)
-        let ok = c.h !== BLOCKED && c.h < maxH && c.ny > 0.8 && Math.abs(x) < this.HX - 1.2 && Math.abs(z) < this.HZ - 1.2
+        // Hillside: stairs and ramps rise at most one terrace (2.4 m) over the ground below them;
+        // anything higher is a rooftop, not a street.
+        let ok = c.h !== BLOCKED && c.h < maxH && c.ny > 0.8 && (!hill || c.h <= this.groundY(x, z) + 2.5) && Math.abs(x) < this.HX - 1.2 && Math.abs(z) < this.HZ - 1.2
         if (ok) {
           for (const [dx, dz] of [[r, 0], [-r, 0], [0, r], [0, -r], [r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]]) {
             const s = sample(x + ox + dx, z + oz + dz)

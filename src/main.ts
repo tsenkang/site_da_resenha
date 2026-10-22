@@ -9,6 +9,7 @@ import { Ui } from './ui/ui'
 import { NetClient } from './net/client'
 import { NetLink } from './net/link'
 import { isRoomCode, type OnlineMapId } from './net/protocol'
+import type { MapId } from './game/maps'
 import { createLeaderboardClient, type LeaderboardClient, type Result, type RunTicket } from '../leaderboard.js'
 
 /**
@@ -40,6 +41,8 @@ async function boot(): Promise<void> {
       game.fovSetting = d.fov
     }
   }
+  /** Map picked on the MAPAS screen (practice deathmatch); null for the normal modes. */
+  let practiceMap: MapId | null = null
   const startMatch = (mode?: GameMode) => {
     if (!game) return
     const selectedMode = mode ?? game.gameMode
@@ -48,9 +51,9 @@ async function boot(): Promise<void> {
     audio.unlock()
     audio.retryMusic()
     ui.resetHud()
-    game.start(selectedMode)
+    game.start(selectedMode, null, practiceMap)
     ui.setMap(game.arena.minimap, game.arena.sites, game.minimapFrame())
-    rankedRun = selectedMode === 'deathmatch'
+    rankedRun = selectedMode === 'deathmatch' && !practiceMap
       ? (async (): Promise<Result<RunTicket>> => {
           const guest = await leaderboard.ensureGuest('RiftRunner')
           if (!guest.ok) return guest
@@ -188,7 +191,14 @@ async function boot(): Promise<void> {
   }
 
   const ui = new Ui(i18n, save, audio, {
-    play: mode => startMatch(mode),
+    play: mode => {
+      practiceMap = null
+      startMatch(mode)
+    },
+    playMap: map => {
+      practiceMap = map
+      startMatch('deathmatch')
+    },
     restart: () => (onlineMatch ? endOnline('online') : startMatch()),
     resume,
     quit: () => {
