@@ -14,7 +14,7 @@ export type MapId = 'mercado' | 'fortaleza' | OnlineMapId
 export type Rect = [number, number, number, number]
 
 /** Decorative/cover props placed by the map: [x, z, kind, rotation (radians, optional)]. */
-export type PropKind = 'parasol' | 'torii' | 'lantern' | 'stall' | 'taxi' | 'gondola' | 'bench' | 'hydrant'
+export type PropKind = 'parasol' | 'torii' | 'lantern' | 'stall' | 'taxi' | 'gondola' | 'bench' | 'hydrant' | 'pole' | 'clothesline' | 'moto' | 'tank'
 export type MapProp = [number, number, PropKind, number?]
 
 /** What makes a place read as itself: roofs, trees, paving, water and a landmark on the horizon. */
@@ -23,7 +23,7 @@ export type MapStyle = {
   /** Window style: shutters and flower boxes (old town) or plain modern panes. */
   windows?: 'shutters' | 'modern'
   tree?: 'round' | 'palm' | 'cherry'
-  floorTex?: 'tile' | 'sand' | 'cobble' | 'gravel'
+  floorTex?: 'tile' | 'sand' | 'cobble' | 'gravel' | 'concrete'
   streetTex?: 'tile' | 'waves' | 'asphalt' | 'cobble'
   /** Silhouette beyond the walls. */
   landmark?: 'sugarloaf' | 'campanile' | 'pagoda' | 'minaret' | 'skyline' | 'church'
@@ -33,6 +33,12 @@ export type MapStyle = {
   backdrop?: 'town' | 'towers'
   /** Leaf colours (cherry blossom pinks, palm greens…). */
   leaf?: [string, string]
+  /** Exposed-brick walls on the first stucco style (unfinished houses). */
+  brick?: boolean
+  /** Hillside favela dressing: water tanks, dishes and rebar on the slabs, no parapets. */
+  favela?: boolean
+  /** Landmark and sea on the north side (behind the attackers) instead of the south. */
+  viewNorth?: boolean
   /** Canal / pool water colour. */
   water?: string
   /** Colour of props such as torii, parasols and stall awnings. */
@@ -99,6 +105,20 @@ export type MapDef = {
   /** Canals and pools: water you cannot walk into (bridges are the gaps between rects). */
   water?: Rect[]
   props?: MapProp[]
+  /**
+   * Hillside maps: raised terraces [x0, x1, z0, z1, top y] (retaining walls on the sides), stair
+   * flights and ramps up a terrace edge: [x0, x1, edge z, low y, high y] climbing toward −z
+   * (the lower ground is on the +z side). Everything else sits on the terrain automatically.
+   */
+  terrain?: {
+    levels: [number, number, number, number, number][]
+    stairs?: [number, number, number, number, number][]
+    ramps?: [number, number, number, number, number][]
+  }
+  /** Ground height under each buy-phase barrier [attack, defend] (hillside maps). */
+  barrierY?: [number, number]
+  /** Perimeter: town walls (default) or invisible walls behind the backdrop (hillside). */
+  perimeter?: 'walls' | 'invisible'
   /** Shown in the online lobby. */
   place?: string
 }
@@ -244,5 +264,5 @@ export const MODE_MAP: Record<GameMode, MapId> = { tactical: 'aurora', deathmatc
 /** Maps live side by side in one physics world, far enough apart to never see each other. */
 export const MAP_ORIGIN: Record<MapId, [number, number]> = {
   aurora: [0, 0], mercado: [2400, 0], fortaleza: [-2400, 0],
-  copacabana: [0, 2400], pelourinho: [0, -2400], veneza: [2400, 2400], kyoto: [-2400, 2400], marrakech: [2400, -2400], manhattan: [-2400, -2400],
+  favela: [4800, 0], copacabana: [0, 2400], pelourinho: [0, -2400], veneza: [2400, 2400], kyoto: [-2400, 2400], marrakech: [2400, -2400], manhattan: [-2400, -2400],
 }

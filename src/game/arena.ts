@@ -69,6 +69,13 @@ export class Arena {
   /** Look and decor options of this map (roofs, trees, paving, landmark…). */
   private style: MapStyle = {}
   private accentCount = 1
+  /**
+   * Ground height added to everything queued (meshes and colliders) while placing an element on
+   * a hillside map; 0 on flat maps and for the terrain itself.
+   */
+  private lift = 0
+  /** Pole tops, in placement order, for stringing wires (favela). */
+  private poleTops: THREE.Vector3[] = []
   /** World offset of this map (maps sit side by side in one physics world). */
   readonly origin: THREE.Vector3
   private readonly hemi: THREE.HemisphereLight
@@ -120,15 +127,18 @@ export class Arena {
     const stucco = stuccoTexture()
     const st: MapStyle = def.style ?? {}
     this.style = st
-    const floorTex = { tile: tileTexture, sand: sandTexture, cobble: () => cobbleTexture(false), gravel: gravelTexture }[st.floorTex ?? 'tile']
+    const floorTex = { tile: tileTexture, sand: sandTexture, cobble: () => cobbleTexture(false), gravel: gravelTexture, concrete: asphaltTexture }[st.floorTex ?? 'tile']
     const streetTex = { tile: () => tileTexture(true), waves: wavesTexture, asphalt: asphaltTexture, cobble: () => cobbleTexture(true) }[st.streetTex ?? 'tile']
     lam('floor', L.floor, floorTex(), 0)
     lam('street', L.street, streetTex(), 0)
     lam('plaza', PALETTE.plaza, plazaTexture(), 0)
     lam('grass', L.grass, grassTexture(), 0)
-    L.stucco.forEach((c, i) => lam(`stucco${i}`, c, stucco))
+    // Exposed brick on the first style when the map asks for it (unfinished houses).
+    const brick = st.brick ? brickTexture() : stucco
+    L.stucco.forEach((c, i) => lam(`stucco${i}`, c, i === 0 ? brick : stucco))
     L.trim.forEach((c, i) => lam(`trim${i}`, c))
-    const tiles = roofTexture()
+    // Favela slabs are bare concrete, not clay tiles.
+    const tiles = st.favela ? asphaltTexture() : roofTexture()
     L.roof.forEach((c, i) => lam(`roof${i}`, c, tiles, 0))
     L.trim.forEach((c, i) => {
       const m = lam(`awning${i}`, '#ffffff', awningTexture(c), 0)
@@ -175,6 +185,8 @@ export class Arena {
       tower.emissiveIntensity = 0.9
     }
     this.mats.tower = tower
+    lam('retain', '#a39d93', stucco)
+    lam('hill', L.grass, grassTexture(), 0)
     this.mats.water = new THREE.MeshLambertMaterial({ color: st.water ?? PALETTE.water, map: rippleTexture(), emissive: st.water ?? '#1d5e6e', emissiveIntensity: 0.25 })
     this.mats.lampGlow = new THREE.MeshBasicMaterial({ color: L.night ? '#ffe2a0' : '#fff1c8' })
     this.mats.lampPool = new THREE.MeshBasicMaterial({ map: poolTexture(), color: '#ffb768', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.55, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 })
@@ -190,12 +202,21 @@ export class Arena {
     this.buildLighting()
     this.buildGround()
     this.buildPerimeter()
-    def.buildings.forEach(([x0, x1, z0, z1, h, style], i) => this.building(x0 * this.K, x1 * this.K, z0 * this.K, z1 * this.K, h, style, i))
-    for (const [x, z, w, d, h, kind] of def.cover) this.cover(x * this.K, z * this.K, w, d, h, kind)
-    for (const [x, z, s] of def.trees) this.tree(x * this.K, z * this.K, s)
-    for (const [x, z] of def.lamps) this.lamp(x * this.K, z * this.K)
-    for (const r of def.water ?? []) this.canal(r[0] * this.K, r[1] * this.K, r[2] * this.K, r[3] * this.K)
-    for (const [x, z, kind, rot] of def.props ?? []) this.prop(kind, x * this.K, z * this.K, rot ?? 0)
+    if (def.terrain) this.buildTerrain()
+    const K = this.K
+    // Each element sits on the terrain under it (hillside maps); `lift` is 0 on flat maps.
+    const on = (x: number, z: number, place: () => void) => {
+      this.lift = this.groundY(x, z)
+      place()
+      this.lift = 0
+    }
+    def.buildings.forEach(([x0, x1, z0, z1, h, style], i) => on(((x0 + x1) / 2) * K, ((z0 + z1) / 2) * K, () => this.building(x0 * K, x1 * K, z0 * K, z1 * K, h, style, i)))
+    for (const [x, z, w, d, h, kind] of def.cover) on(x * K, z * K, () => this.cover(x * K, z * K, w, d, h, kind))
+    for (const [x, z, s] of def.trees) on(x * K, z * K, () => this.tree(x * K, z * K, s))
+    for (const [x, z] of def.lamps) on(x * K, z * K, () => this.lamp(x * K, z * K))
+    for (const r of def.water ?? []) this.canal(r[0] * K, r[1] * K, r[2] * K, r[3] * K)
+    for (const [x, z, kind, rot] of def.props ?? []) on(x * K, z * K, () => this.prop(kind, x * K, z * K, rot ?? 0))
+    this.stringWires()
     if (def.sites) this.buildSites()
     this.buildBackdrop()
     this.buildLandmark()
@@ -240,7 +261,8 @@ export class Arena {
 
   // ─── building helpers ──────────────────────────────────────────────────
   private queue(key: string, geo: THREE.BufferGeometry, matrix: THREE.Matrix4): void {
-    const g = (geo.index ? geo.toNonIndexed() : geo.clone()).applyMatrix4(matrix)
+    const m = this.lift ? new THREE.Matrix4().makeTranslation(0, this.lift, 0).multiply(matrix) : matrix
+    const g = (geo.index ? geo.toNonIndexed() : geo.clone()).applyMatrix4(m)
     for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name)
     if (!g.getAttribute('uv')) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.getAttribute('position').count * 2), 2))
     const list = this.pending.get(key) ?? []
@@ -298,7 +320,7 @@ export class Arena {
   }
 
   private collider(cx: number, cy: number, cz: number, w: number, h: number, d: number, surface: Surface): RAPIER.Collider {
-    const c = this.physics.addStaticBox(new THREE.Vector3(cx + this.origin.x, cy, cz + this.origin.z), new THREE.Vector3(w, h, d))
+    const c = this.physics.addStaticBox(new THREE.Vector3(cx + this.origin.x, cy + this.lift, cz + this.origin.z), new THREE.Vector3(w, h, d))
     this.tags.set(c.handle, { kind: 'world', surface })
     return c
   }
@@ -322,6 +344,8 @@ export class Arena {
       const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
       const hs = Array.from({ length: segs }, (_, i) => base + Math.sin(i * 0.23 + seed) * amp + Math.sin(i * 0.07 + 1) * amp * 1.4 + rnd() * amp * 0.7)
       for (let i = 0; i < segs; i += 1) {
+        // Keep the view toward the sea open on maps that look north over the city.
+        if (this.style.viewNorth && Math.sin((i / segs) * Math.PI * 2) > -0.25) continue
         const a0 = (i / segs) * Math.PI * 2
         const a1 = ((i + 1) / segs) * Math.PI * 2
         const p = (a: number, y: number) => [Math.cos(a) * R, y, Math.sin(a) * R]
@@ -394,7 +418,8 @@ export class Arena {
     this.flat('grass', -this.HX + 1, this.HX - 1, -this.HZ + 1, -this.HZ + 5, 0.008, 5)
     this.flat('grass', -this.HX + 1, this.HX - 1, this.HZ - 5, this.HZ - 1, 0.008, 5)
     // Outside the walls: a plain under the ridge so the horizon never shows a void.
-    for (const [x0, x1, z0, z1] of [[-400, 400, -400, -this.HZ], [-400, 400, this.HZ, 400], [-400, -this.HX, -this.HZ, this.HZ], [this.HX, 400, -this.HZ, this.HZ]]) {
+    if (this.def.terrain) this.buildHillside()
+    else for (const [x0, x1, z0, z1] of [[-400, 400, -400, -this.HZ], [-400, 400, this.HZ, 400], [-400, -this.HX, -this.HZ, this.HZ], [this.HX, 400, -this.HZ, this.HZ]]) {
       const sea = this.style.sea && z1 <= -this.HZ
       const g = new THREE.PlaneGeometry(x1 - x0, z1 - z0)
       g.rotateX(-Math.PI / 2)
@@ -409,6 +434,15 @@ export class Arena {
   private buildPerimeter(): void {
     const h = 9
     const t = 2
+    if (this.def.perimeter === 'invisible') {
+      // Hillside: the houses outside are the edge; tall invisible walls keep players in.
+      const H = 60
+      this.collider(0, H / 2, -this.HZ - t / 2, this.HX * 2 + 2 * t, H, t, 'concrete')
+      this.collider(0, H / 2, this.HZ + t / 2, this.HX * 2 + 2 * t, H, t, 'concrete')
+      this.collider(-this.HX - t / 2, H / 2, 0, t, H, this.HZ * 2, 'concrete')
+      this.collider(this.HX + t / 2, H / 2, 0, t, H, this.HZ * 2, 'concrete')
+      return
+    }
     const wall = (cx: number, cz: number, w: number, d: number) => {
       this.box('perimeter', cx, 0, cz, w, h, d, { tile: 6 })
       this.box('roof0', cx, h, cz, w + 0.5, 0.5, d + 0.5, { collide: false, tile: 2 })
@@ -455,7 +489,9 @@ export class Arena {
     this.box('base', cx, 0, cz, w + 0.14, 1, d + 0.14, { collide: false, tile: 2 })
     this.box(`trim${style}`, cx, h - 0.35, cz, w + 0.3, 0.35, d + 0.3, { collide: false, tile: 2 })
     this.box(`trim${style}`, cx, h * 0.5, cz, w + 0.16, 0.16, d + 0.16, { collide: false, tile: 2 })
-    if (this.style.roof === 'flat') {
+    if (this.style.favela) {
+      this.lajeRoof(cx, cz, w, d, h, style, index)
+    } else if (this.style.roof === 'flat') {
       // Flat roof: slab, parapet and a few rooftop units (water tanks, AC boxes).
       this.box(`roof${(style + index) % 3}`, cx, h - 0.05, cz, w - 0.2, 0.2, d - 0.2, { collide: false, tile: 3 })
       this.box(`stucco${style}`, cx, h, cz - d / 2 + 0.15, w + 0.3, 0.9, 0.3, { collide: false, tile: 4 })
@@ -526,7 +562,7 @@ export class Arena {
     }
     if (this.style.windows === 'modern') return
     // Shutters in the trim colour.
-    for (const sx of [-1, 1]) put(`trim${(style + 1) % 3}`, worldBox(w * 0.48, h + 0.1, 0.06, 2), sx * (w / 2 + w * 0.26 + 0.12), 0, 0.07)
+    for (const sx of [-1, 1]) put(`trim${(style + 1) % this.def.look.trim.length}`, worldBox(w * 0.48, h + 0.1, 0.06, 2), sx * (w / 2 + w * 0.26 + 0.12), 0, 0.07)
     if ((i + style) % 3 === 0) {
       put('crate', worldBox(w + 0.2, 0.28, 0.32, 1), 0, -h / 2 - 0.2, 0.22)
       for (let b = 0; b < 4; b += 1) put(`bloom${(b + i) % 4}`, new THREE.IcosahedronGeometry(0.13, 0), -w / 2 + 0.2 + b * ((w - 0.4) / 3), -h / 2 - 0.02, 0.24)
@@ -588,6 +624,203 @@ export class Arena {
       this.queue(`leaf${i % 2}`, g, new THREE.Matrix4().makeTranslation(x + Math.cos(a) * off, trunkH + r * 0.6 + (i === 0 ? 0.6 * s : 0), z + Math.sin(a) * off))
     }
     this.minimap.push({ x0: x - 0.4, x1: x + 0.4, z0: z - 0.4, z1: z + 0.4, kind: 'cover' })
+  }
+
+  // ─── hillside terrain ──────────────────────────────────────────────────
+  /** Terrace height at a map-local point (0 on flat maps and on the street). */
+  private groundY(x: number, z: number): number {
+    let y = 0
+    const K = this.K
+    for (const [x0, x1, z0, z1, h] of this.def.terrain?.levels ?? []) if (x >= x0 * K && x <= x1 * K && z >= z0 * K && z <= z1 * K) y = Math.max(y, h)
+    return y
+  }
+
+  /** Terraces with retaining walls, stair alleys and ramps. */
+  private buildTerrain(): void {
+    const T = this.def.terrain!
+    const K = this.K
+    for (const [x0, x1, z0, z1, y] of T.levels) {
+      const X0 = x0 * K, X1 = x1 * K, Z0 = z0 * K, Z1 = z1 * K
+      const cx = (X0 + X1) / 2, cz = (Z0 + Z1) / 2, w = X1 - X0, d = Z1 - Z0
+      this.box('retain', cx, 0, cz, w, y, d, { tile: 3 })
+      this.flat('floor', X0, X1, Z0, Z1, y + 0.01, 4)
+      // Concrete lip on the front edge and a contact shade at the foot of the wall.
+      this.box('base', cx, y - 0.2, Z1 - 0.16, w, 0.32, 0.32, { collide: false, tile: 2 })
+      this.lift = this.groundY(cx, Z1 + 0.5)
+      if (this.lift < y) this.aoStrip(X0, Z1, X1, Z1, 0, 1, 1.6)
+      this.lift = 0
+    }
+    // Stair flights climb toward −z; the bottom step is the longest (steps the controller can take).
+    for (const [x0, x1, ez, lo, hi] of T.stairs ?? []) {
+      const n = Math.max(2, Math.ceil((hi - lo) / 0.32))
+      const sh = (hi - lo) / n
+      const dep = 0.45
+      const w = (x1 - x0) * K
+      const cx = ((x0 + x1) / 2) * K
+      const z = ez * K
+      for (let i = 0; i < n; i += 1) {
+        const len = (n - i) * dep
+        this.box('retain', cx, lo, z + len / 2, w, sh * (i + 1), len, { tile: 1 })
+        // Worn edge on each tread.
+        this.box('base', cx, lo + sh * (i + 1) - 0.04, z + len - 0.06, w, 0.06, 0.12, { collide: false, tile: 1 })
+      }
+      // A rusty handrail on one side.
+      this.box('dark', x0 * K + 0.12, lo + 0.9, z + (n * dep) / 2, 0.06, 0.06, n * dep + 0.4, { collide: false, tile: 1 })
+    }
+    for (const [x0, x1, ez, lo, hi] of T.ramps ?? []) this.ramp(x0 * K, x1 * K, ez * K, lo, hi)
+  }
+
+  /** Solid concrete ramp (≈20°) from `lo` at the +z end up to `hi` at the terrace edge `ez`. */
+  private ramp(x0: number, x1: number, ez: number, lo: number, hi: number): void {
+    const rise = hi - lo
+    const run = rise / Math.tan((20 * Math.PI) / 180)
+    const zl = ez + run
+    const top = new THREE.BufferGeometry()
+    top.setAttribute('position', new THREE.Float32BufferAttribute([x0, lo, zl, x1, lo, zl, x1, hi, ez, x0, lo, zl, x1, hi, ez, x0, hi, ez], 3))
+    top.setAttribute('uv', new THREE.Float32BufferAttribute([x0 / 4, zl / 4, x1 / 4, zl / 4, x1 / 4, ez / 4, x0 / 4, zl / 4, x1 / 4, ez / 4, x0 / 4, ez / 4], 2))
+    top.computeVertexNormals()
+    this.queue('floor', top, new THREE.Matrix4())
+    const sides = new THREE.BufferGeometry()
+    sides.setAttribute('position', new THREE.Float32BufferAttribute([x0, lo, zl, x0, hi, ez, x0, lo, ez, x1, lo, zl, x1, lo, ez, x1, hi, ez], 3))
+    sides.setAttribute('uv', new THREE.Float32BufferAttribute([zl / 3, lo / 3, ez / 3, hi / 3, ez / 3, lo / 3, zl / 3, lo / 3, ez / 3, lo / 3, ez / 3, hi / 3], 2))
+    sides.computeVertexNormals()
+    this.queue('retain', sides, new THREE.Matrix4())
+    // Collider: a thick slab under the slope.
+    const a = Math.atan2(rise, run)
+    const L = Math.hypot(rise, run)
+    const t = 0.6
+    const n = new THREE.Vector3(0, Math.cos(a), Math.sin(a))
+    const c = new THREE.Vector3((x0 + x1) / 2, lo + rise / 2, ez + run / 2).addScaledVector(n, -t / 2).add(this.origin)
+    const col = this.physics.addStaticBox(c, new THREE.Vector3(x1 - x0, t, L), new THREE.Quaternion().setFromEuler(new THREE.Euler(a, 0, 0)))
+    this.tags.set(col.handle, { kind: 'world', surface: 'concrete' })
+  }
+
+  /** Hillside height outside the playable area: rises uphill (south) and to the sides, falls toward the city. */
+  private hillY(x: number, z: number): number {
+    let y = z > 20 ? -Math.max(0, z - this.HZ) * 0.06 : Math.min(9.6, (20 - z) * 0.137)
+    if (z < -this.HZ) y += (-this.HZ - z) * 0.32
+    return Math.max(-12, y + Math.max(0, Math.abs(x) - this.HX) * 0.18)
+  }
+
+  /** Green hillside around the map (sunk out of sight inside the walls). */
+  private buildHillside(): void {
+    const N = 80
+    const S = 640
+    const g = new THREE.PlaneGeometry(S, S, N, N)
+    g.rotateX(-Math.PI / 2)
+    const pos = g.getAttribute('position') as THREE.BufferAttribute
+    const uv = g.getAttribute('uv') as THREE.BufferAttribute
+    for (let i = 0; i < pos.count; i += 1) {
+      const x = pos.getX(i)
+      const z = pos.getZ(i)
+      const inside = Math.abs(x) < this.HX + 1 && Math.abs(z) < this.HZ + 1
+      pos.setY(i, inside ? -0.3 : this.hillY(x, z) - 0.4)
+      uv.setXY(i, x / 6, z / 6)
+    }
+    g.computeVertexNormals()
+    this.queue('hill', g, new THREE.Matrix4())
+  }
+
+  /** The favela keeps going outside the walls; below to the north, the city and the sea. */
+  private buildFavelaBackdrop(): void {
+    let s = 913
+    const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
+    const nStucco = this.def.look.stucco.length
+    for (let i = 0; i < 900; i += 1) {
+      const x = (rnd() - 0.5) * 300
+      const z = -210 + rnd() * 262
+      const out = Math.abs(x) > this.HX + 3 || z < -this.HZ - 3
+      if (!out || (Math.abs(x) < this.HX + 3 && z > -this.HZ)) continue
+      const dist = Math.max(Math.abs(x) - this.HX, -this.HZ - z, 0)
+      if (rnd() < dist / 160) continue
+      const w = 3.5 + rnd() * 4
+      const d = 3.5 + rnd() * 4
+      const h = 3 + Math.floor(rnd() * 3) * 2.8 + rnd()
+      const base = this.hillY(x, z)
+      const style = rnd() < 0.45 ? 0 : 1 + Math.floor(rnd() * (nStucco - 1))
+      const rot = (rnd() - 0.5) * 0.25
+      const m = new THREE.Matrix4().makeRotationY(rot).setPosition(x, base - 3 + (h + 3) / 2, z)
+      this.queue(`stucco${style}`, worldBox(w, h + 3, d, 5), m)
+      this.queue(`roof${i % 3}`, worldBox(w + 0.2, 0.22, d + 0.2, 3), new THREE.Matrix4().makeRotationY(rot).setPosition(x, base + h + 0.1, z))
+      if (rnd() < 0.35) this.queue('accent0', new THREE.CylinderGeometry(0.5, 0.5, 0.8, 8), new THREE.Matrix4().makeTranslation(x + w * 0.2, base + h + 0.6, z - d * 0.2))
+      // A few lit-window specks on the street-facing side.
+      if (rnd() < 0.6) this.queue('window', worldBox(0.9, 1.1, 0.06, 1), new THREE.Matrix4().makeRotationY(rot).setPosition(x - w * 0.15, base + h * 0.55, z + d / 2 + 0.02))
+    }
+    // The city below: low blocks, then towers along the beach, then the sea.
+    for (let i = 0; i < 260; i += 1) {
+      const x = (rnd() - 0.5) * 520
+      const z = 75 + rnd() * 130
+      const base = this.hillY(x, z)
+      const beach = z > 175
+      const w = 8 + rnd() * 14
+      const d = 8 + rnd() * 14
+      const h = beach ? 18 + rnd() * 30 : 5 + rnd() * 16
+      this.queue(beach || rnd() < 0.5 ? 'tower' : `far${i % 4}`, worldBox(w, h + 4, d, 12), new THREE.Matrix4().setPosition(x, base - 4 + (h + 4) / 2, z))
+    }
+    const sea = new THREE.PlaneGeometry(1400, 700)
+    sea.rotateX(-Math.PI / 2)
+    this.queue('sea', sea, new THREE.Matrix4().makeTranslation(0, -12.2, 205 + 350))
+  }
+
+  /** Slab roof of an unfinished house: water tank, rebar at the corners, a dish, sometimes an extra room. */
+  private lajeRoof(cx: number, cz: number, w: number, d: number, h: number, style: number, index: number): void {
+    this.box(`roof${(style + index) % 3}`, cx, h - 0.06, cz, w + 0.3, 0.26, d + 0.3, { collide: false, tile: 3 })
+    const r = () => this.rand()
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      if (r() < 0.35) continue
+      for (let k = 0; k < 2; k += 1) this.box('dark', cx + sx * (w / 2 - 0.15 - k * 0.12), h + 0.2, cz + sz * (d / 2 - 0.15), 0.035, 0.5 + r() * 0.8, 0.035, { collide: false, tile: 1 })
+    }
+    const tx = cx + (r() - 0.5) * w * 0.5
+    const tz = cz + (r() - 0.5) * d * 0.5
+    this.queue('accent0', new THREE.CylinderGeometry(0.55, 0.55, 0.95, 10), new THREE.Matrix4().makeTranslation(tx, h + 0.68, tz))
+    this.queue('accent0', new THREE.CylinderGeometry(0.6, 0.6, 0.08, 10), new THREE.Matrix4().makeTranslation(tx, h + 1.19, tz))
+    if (r() < 0.45) {
+      const dish = new THREE.SphereGeometry(0.42, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2.8)
+      const m = new THREE.Matrix4().compose(new THREE.Vector3(cx - w * 0.3, h + 0.9, cz + d * 0.3), new THREE.Quaternion().setFromEuler(new THREE.Euler(-2.2, 0.4, 0)), new THREE.Vector3(1, 1, 1))
+      this.queue('white', dish, m)
+      this.box('metal', cx - w * 0.3, h + 0.13, cz + d * 0.3, 0.06, 0.7, 0.06, { collide: false, tile: 1 })
+    }
+    if (w * d > 34 && r() < 0.5) {
+      // "Puxadinho": a smaller room built on the slab later.
+      const ew = w * 0.5
+      const ed = d * 0.55
+      const ex = cx + (r() < 0.5 ? -1 : 1) * (w - ew) / 2
+      const ez = cz + (r() < 0.5 ? -1 : 1) * (d - ed) / 2
+      this.box(r() < 0.6 ? 'stucco0' : `stucco${style}`, ex, h + 0.2, ez, ew, 2.6, ed, { tile: 5 })
+      this.box(`roof${index % 3}`, ex, h + 2.74, ez, ew + 0.3, 0.22, ed + 0.3, { collide: false, tile: 3 })
+    }
+  }
+
+  /** Wires sagging between consecutive utility poles (a tangle of three per span). */
+  private stringWires(): void {
+    const tops = this.poleTops
+    const seg = new THREE.BoxGeometry(0.03, 0.03, 1)
+    const span = (a: THREE.Vector3, b: THREE.Vector3, off: number, sagK: number) => {
+      const dist = a.distanceTo(b)
+      const side = new THREE.Vector3(b.z - a.z, 0, a.x - b.x).normalize().multiplyScalar(off)
+      const sag = dist * sagK
+      const pts: THREE.Vector3[] = []
+      for (let i = 0; i <= 6; i += 1) {
+        const t = i / 6
+        pts.push(a.clone().lerp(b, t).add(side).setY(a.y + (b.y - a.y) * t - sag * 4 * t * (1 - t)))
+      }
+      for (let i = 0; i < 6; i += 1) {
+        const p = pts[i]
+        const q = pts[i + 1]
+        const m = new THREE.Matrix4().lookAt(p, q, new THREE.Vector3(0, 1, 0))
+        m.scale(new THREE.Vector3(1, 1, p.distanceTo(q)))
+        m.setPosition(p.clone().add(q).multiplyScalar(0.5))
+        this.queue('dark', seg, m)
+      }
+    }
+    for (let i = 0; i < tops.length; i += 1) {
+      for (const j of [i + 1, i + 2]) {
+        const a = tops[i]
+        const b = tops[j]
+        if (!b || a.distanceTo(b) > 30 || (j === i + 2 && this.rand() < 0.5)) continue
+        for (const [off, k] of [[-0.6, 0.035], [0, 0.05], [0.6, 0.042]] as const) span(a, b, off, k)
+      }
+    }
   }
 
   /** Palm: a gently curving segmented trunk and a crown of drooping fronds. */
@@ -730,6 +963,47 @@ export class Arena {
         for (const sx of [-0.85, 0.85]) part('metal', sx, 0, 0, 0.1, 0.42, 0.44)
         return
       }
+      case 'pole': {
+        const post = new THREE.CylinderGeometry(0.13, 0.2, 8, 8)
+        this.queue('stone', post, new THREE.Matrix4().makeTranslation(x, 4, z))
+        this.collider(x, 4, z, 0.4, 8, 0.4, 'concrete')
+        part('dark', 0, 7.3, 0, 1.6, 0.12, 0.12)
+        part('dark', 0.25, 5.8, 0, 0.45, 0.75, 0.45)
+        this.poleTops.push(new THREE.Vector3(x, this.lift + 7.42, z))
+        this.minimap.push({ x0: x - 0.3, x1: x + 0.3, z0: z - 0.3, z1: z + 0.3, kind: 'cover' })
+        return
+      }
+      case 'clothesline': {
+        for (const sx of [-1.7, 1.7]) part('metal', sx, 0, 0, 0.06, 1.9, 0.06)
+        part('white', 0, 1.86, 0, 3.4, 0.02, 0.02)
+        for (let i = 0; i < 5; i += 1) {
+          const cloth = new THREE.PlaneGeometry(0.5, 0.65 + (i % 2) * 0.2)
+          const m = new THREE.Matrix4().compose(at(-1.2 + i * 0.6, 1.5 - (i % 2) * 0.1, 0), q, new THREE.Vector3(1, 1, 1))
+          this.queue(accent(n + i), cloth, m)
+        }
+        return
+      }
+      case 'moto': {
+        part(accent(n), 0, 0.32, 0, 0.32, 0.42, 1.25, true)
+        part('dark', 0, 0.74, -0.1, 0.3, 0.12, 0.62)
+        part('metal', 0, 0.78, 0.55, 0.7, 0.05, 0.05)
+        for (const wz of [-0.62, 0.62]) {
+          const wheel = new THREE.CylinderGeometry(0.3, 0.3, 0.1, 12)
+          wheel.rotateZ(Math.PI / 2)
+          const p = at(0, 0.3, wz)
+          this.queue('dark', wheel, new THREE.Matrix4().compose(p, q, new THREE.Vector3(1, 1, 1)))
+        }
+        return
+      }
+      case 'tank': {
+        const body = new THREE.CylinderGeometry(0.7, 0.7, 1.3, 12)
+        this.queue('accent0', body, new THREE.Matrix4().makeTranslation(x, 0.65, z))
+        this.queue('accent0', new THREE.CylinderGeometry(0.75, 0.75, 0.1, 12), new THREE.Matrix4().makeTranslation(x, 1.33, z))
+        this.collider(x, 0.65, z, 1.4, 1.3, 1.4, 'metal')
+        this.aoFootprint(x - 0.7, x + 0.7, z - 0.7, z + 0.7, 0.7)
+        this.minimap.push({ x0: x - 0.7, x1: x + 0.7, z0: z - 0.7, z1: z + 0.7, kind: 'cover' })
+        return
+      }
       case 'hydrant': {
         const body = new THREE.CylinderGeometry(0.17, 0.2, 0.75, 10)
         this.queue('red', body, new THREE.Matrix4().makeTranslation(x, 0.375, z))
@@ -759,6 +1033,7 @@ export class Arena {
     const [hx, hz] = sd.half ?? [9.5, 8.5]
     const defs: [SiteId, number, number, string][] = [['A', sd.a[0] * this.K, sd.a[1] * this.K, '#ff6b5a'], ['B', sd.b[0] * this.K, sd.b[1] * this.K, '#ffb648']]
     for (const [id, x, z, color] of defs) {
+      this.lift = this.groundY(x, z)
       const site: Site = { id, center: new THREE.Vector3(x, 0, z).add(this.origin), halfX: hx * this.K * 0.95, halfZ: hz * this.K * 0.95, color }
       this.sites.push(site)
       const m = new THREE.Matrix4().makeRotationX(-Math.PI / 2).setPosition(x, 0.02, z)
@@ -785,11 +1060,13 @@ export class Arena {
       }
       const sm = new THREE.Matrix4().compose(pos, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rot), new THREE.Vector3(1, 1, 1))
       this.queue('paint', sign, sm)
+      this.lift = 0
     }
   }
 
   /** Town skyline outside the walls: hazy houses with roofs and cypress trees (no colliders). */
   private buildBackdrop(): void {
+    if (this.style.favela) return this.buildFavelaBackdrop()
     let s = 77
     const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647)
     for (let i = 0; i < 70; i += 1) {
@@ -836,8 +1113,12 @@ export class Arena {
   private buildLandmark(): void {
     const lm = this.style.landmark
     if (!lm) return
+    // The view can face north (behind the attackers) instead of south.
+    const f = this.style.viewNorth ? -1 : 1
+    // Hillside maps look down on the sea, 12 m below the foot of the hill.
+    const base = this.def.terrain ? -12.2 : 0
     const put = (mat: string, g: THREE.BufferGeometry, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1, ry = 0) =>
-      this.queue(mat, g, new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ry), new THREE.Vector3(sx, sy, sz)))
+      this.queue(mat, g, new THREE.Matrix4().compose(new THREE.Vector3(x, y + base, z * f), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), ry), new THREE.Vector3(sx, sy, sz)))
     const box = (mat: string, x: number, y0: number, z: number, w: number, h: number, d: number) => put(mat, worldBox(w, h, d, 6), x, y0 + h / 2, z)
     switch (lm) {
       case 'sugarloaf': {
@@ -915,18 +1196,20 @@ export class Arena {
 
   // ─── spawn barriers (buy phase) ────────────────────────────────────────
   private barrier(side: TeamSide, z: number): void {
+    this.lift = this.def.barrierY?.[side === 'attack' ? 0 : 1] ?? 0
     const w = this.HX * 2
     const h = 6
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), this.barrierMat)
     const uv = mesh.geometry.getAttribute('uv') as THREE.BufferAttribute
     for (let i = 0; i < uv.count; i += 1) uv.setXY(i, (uv.getX(i) * w) / 3, (uv.getY(i) * h) / 3)
-    mesh.position.set(0, h / 2, z)
+    mesh.position.set(0, h / 2 + this.lift, z)
     mesh.visible = false
     mesh.renderOrder = 3
     this.group.add(mesh)
     const collider = this.collider(0, h / 2, z, w, h, 0.3, 'metal')
     collider.setEnabled(false)
     this.barriers.push({ side, collider, mesh })
+    this.lift = 0
   }
 
   /** Raise/lower the buy-phase walls in front of each spawn. */
@@ -947,13 +1230,20 @@ export class Arena {
     const ox = this.origin.x
     const oz = this.origin.z
     const nav = new NavGrid(this.HX * 2, this.HZ * 2, 1, -this.HX + ox, -this.HZ + oz)
+    // Stair flights rise ~0.6 m per 1 m cell.
+    if (this.def.terrain) nav.maxStep = 0.7
     const world = this.physics.world
-    const ray = new RAPIER.Ray({ x: 0, y: 4.5, z: 0 }, { x: 0, y: -1, z: 0 })
+    // Hillside maps: sample from high up and accept any terrace height; stair risers are steps.
+    const hill = !!this.def.terrain
+    const top = hill ? 40 : 4.5
+    const maxH = hill ? 30 : 0.5
+    const maxStep = hill ? 0.45 : 0.3
+    const ray = new RAPIER.Ray({ x: 0, y: top, z: 0 }, { x: 0, y: -1, z: 0 })
     const sample = (x: number, z: number): { h: number; ny: number } => {
-      ray.origin = { x, y: 4.5, z }
-      const hit = world.castRayAndGetNormal(ray, 6, true)
+      ray.origin = { x, y: top, z }
+      const hit = world.castRayAndGetNormal(ray, top + 1.5, true)
       if (!hit) return { h: BLOCKED, ny: 0 }
-      return { h: 4.5 - hit.timeOfImpact, ny: hit.normal.y }
+      return { h: top - hit.timeOfImpact, ny: hit.normal.y }
     }
     const r = 0.5
     for (let cz = 0; cz < nav.rows; cz += 1) {
@@ -961,11 +1251,11 @@ export class Arena {
         const x = -this.HX + cx + 0.5
         const z = -this.HZ + cz + 0.5
         const c = sample(x + ox, z + oz)
-        let ok = c.h !== BLOCKED && c.h < 0.5 && c.ny > 0.8 && Math.abs(x) < this.HX - 1.2 && Math.abs(z) < this.HZ - 1.2
+        let ok = c.h !== BLOCKED && c.h < maxH && c.ny > 0.8 && Math.abs(x) < this.HX - 1.2 && Math.abs(z) < this.HZ - 1.2
         if (ok) {
           for (const [dx, dz] of [[r, 0], [-r, 0], [0, r], [0, -r], [r * 0.7, r * 0.7], [-r * 0.7, r * 0.7], [r * 0.7, -r * 0.7], [-r * 0.7, -r * 0.7]]) {
             const s = sample(x + ox + dx, z + oz + dz)
-            if (Math.abs(s.h - c.h) > 0.3) {
+            if (Math.abs(s.h - c.h) > maxStep) {
               ok = false
               break
             }
@@ -1236,6 +1526,30 @@ function wavesTexture(): THREE.CanvasTexture {
     for (let i = 0; i < 900; i += 1) {
       g.fillStyle = `rgba(128,128,128,${0.08 + r() * 0.1})`
       g.fillRect(r() * s, r() * s, 3, 3)
+    }
+  })
+}
+
+/** Exposed hollow-brick wall (multiplied by the brick colour): darker bricks, light mortar. */
+function brickTexture(): THREE.CanvasTexture {
+  return canvasTex(256, (g, s) => {
+    g.fillStyle = '#ffffff'
+    g.fillRect(0, 0, s, s)
+    const r = seeded(101)
+    const rows = 12
+    const rh = s / rows
+    const bw = s / 6
+    for (let y = 0; y < rows; y += 1) {
+      for (let x = -1; x < 7; x += 1) {
+        const v = 178 + Math.floor(r() * 50)
+        g.fillStyle = `rgb(${v},${v - 10},${v - 22})`
+        g.fillRect(x * bw + (y % 2) * (bw / 2) + 2, y * rh + 2, bw - 4, rh - 4)
+      }
+    }
+    // Mortar smears and stains.
+    for (let i = 0; i < 18; i += 1) {
+      g.fillStyle = `rgba(230,225,215,${0.15 + r() * 0.2})`
+      g.fillRect(r() * s, r() * s, 10 + r() * 40, 6 + r() * 20)
     }
   })
 }

@@ -237,7 +237,93 @@ const MANHATTAN = tactical({
   },
 })
 
-export const REAL_MAPS: Partial<Record<MapId, MapDef>> & Record<'copacabana' | 'pelourinho' | 'veneza' | 'kyoto' | 'marrakech' | 'manhattan', MapDef> = {
+/**
+ * A Rio favela on a hillside (in the spirit of the classic shooter map): attackers start on the
+ * street at the foot of the hill, defenders hold the top. Four terrace levels with retaining walls,
+ * narrow stair alleys and a steep main ramp; brick and painted houses with slab roofs, water
+ * tanks, dishes and rebar; tangled wiring on concrete poles; the city, the sea, Sugarloaf and the
+ * Christ statue below. Metres (scale 1), heights in metres.
+ */
+const FAVELA: MapDef = {
+  id: 'favela',
+  name: 'Morro',
+  place: 'Favela · Rio de Janeiro',
+  scale: 1,
+  halfX: 44,
+  halfZ: 50,
+  perimeter: 'invisible',
+  terrain: {
+    levels: [
+      [-44, -14, -50, 20, 2.4], [-44, -14, -50, 4, 4.8], [-44, -14, -50, -10, 7.2], [-44, -14, -50, -28, 9.6],
+      [-14, 14, -50, 16, 2.4], [-14, 14, -50, 2, 4.8], [-14, 14, -50, -14, 7.2], [-14, 14, -50, -30, 9.6],
+      [14, 44, -50, 22, 2.4], [14, 44, -50, 8, 4.8], [14, 44, -50, -8, 7.2], [14, 44, -50, -26, 9.6],
+    ],
+    stairs: [
+      [-38, -35, 20, 0, 2.4], [-22, -19, 20, 0, 2.4], [30, 33, 22, 0, 2.4],
+      [-30, -27, 4, 2.4, 4.8], [6, 9, 2, 2.4, 4.8], [20, 23, 8, 2.4, 4.8], [38, 41, 8, 2.4, 4.8],
+      [-40, -37, -10, 4.8, 7.2], [-6, -3, -14, 4.8, 7.2], [8, 11, -14, 4.8, 7.2], [15, 18, -8, 4.8, 7.2], [39, 42, -8, 4.8, 7.2],
+      [-42, -39, -28, 7.2, 9.6], [-18, -15, -28, 7.2, 9.6], [18, 21, -26, 7.2, 9.6], [34, 37, -26, 7.2, 9.6],
+    ],
+    ramps: [[-4, 4, 16, 0, 2.4], [-8, -2, 2, 2.4, 4.8], [-3, 3, -30, 7.2, 9.6]],
+  },
+  barrierY: [0, 9.6],
+  buildings: [
+    // Street at the foot of the hill.
+    [-44, -30, 26, 34, 6, 1], [-24, -12, 25, 32, 7, 0], [12, 24, 27, 34, 6, 2], [30, 44, 28, 36, 7, 3],
+    // Terrace 1.
+    [-44, -34, 8, 18, 7, 2], [-30, -20, 10, 18, 6, 0], [9.5, 13.5, 6, 14, 7, 4], [16, 24, 12, 20, 6, 1], [34, 44, 12, 20, 8, 0],
+    // Terrace 2.
+    [-44, -36, -5, 2, 6, 0], [-26, -16, -8, 2, 7, 3], [-13, -7, -9, 0, 8, 2], [4, 12, -10, -2, 6, 0], [38, 44, -3, 6, 7, 4],
+    // Terrace 3.
+    [-44, -39, -23, -12, 6, 2], [-20, -15, -23, -15, 6, 1], [-11, -4, -28, -19, 9, 0], [4, 12, -27, -18, 7, 3], [24, 32, -21, -11, 8, 0], [38, 44, -22, -12, 6, 2],
+    // The top.
+    [-44, -30, -46, -36, 7, 1], [-36, -26, -34, -30, 5, 4], [-26, -14, -48, -40, 6, 0], [14, 26, -48, -40, 7, 2], [32, 44, -46, -36, 6, 3],
+  ],
+  cover: [
+    // Site A (upper west terrace).
+    [-31, -16, 2, 2, 1.6, 0], [-31, -14, 2, 2, 3.2, 0], [-27, -22, 2, 2, 1.6, 0], [-35, -22, 4, 1.2, 1.1, 1],
+    // Site B (middle east terrace).
+    [26, 3, 2, 2, 1.6, 0], [32, -3, 2, 2, 1.6, 0], [32, -1, 2, 2, 3.2, 0], [24, -4, 1.6, 1.6, 1.6, 0],
+    // Street and alleys.
+    [-30, 40, 2, 2, 1.6, 0], [26, 40, 2, 2, 1.6, 0], [-12, 22, 1.6, 1.6, 1.6, 0], [18, 24, 2, 2, 1.6, 0],
+    [-36, 0, 1.6, 1.6, 1.6, 0], [0, -6, 2, 2, 1.6, 0], [20, -16, 2, 2, 1.6, 0], [-2, -40, 4, 1.2, 1.1, 1], [8, -36, 2, 2, 1.6, 0],
+  ],
+  trees: [[0, -17, 1.2], [36, 16, 1], [-40, 26, 1], [-8, 10, 0.9]],
+  props: [
+    [-24, -15, 'tank'], [34, 3, 'tank'], [-6, 30, 'tank'], [19, 5, 'tank'],
+    [-33, -22, 'moto', 0.4], [25, 2, 'moto', -0.6], [-8, 30, 'moto', 1.2], [10, 28, 'moto', -0.3], [-30, 4, 'moto', 1.6],
+    [-16, 22, 'pole'], [6, 20, 'pole'], [26, 24, 'pole'], [18, 10, 'pole'], [0, 0, 'pole'], [-24, -10, 'pole'], [-32, 6, 'pole'],
+    [4, -16, 'pole'], [28, -24, 'pole'], [-8, -34, 'pole'], [10, -34, 'pole'],
+    [-18, 12, 'clothesline', Math.PI / 2], [20, -14, 'clothesline'], [-30, -32, 'clothesline'], [2, 12, 'clothesline', 0.3],
+  ],
+  lamps: [[-26, 22], [8, 24], [36, 24], [-14, 4], [14, 0], [-20, -12], [20, -24], [0, -36]],
+  streets: [[-44, 44, 20, 50]],
+  plazas: [],
+  water: [],
+  sites: { a: [-29, -19], b: [29, 0], half: [8, 6.5] },
+  barriers: [34.5, -37.5],
+  teamSpawnZ: [44, -45],
+  ffaSpawns: [[-30, 42], [30, 42], [0, 44], [-30, -44], [30, -44], [0, -45]],
+  hotspots: [],
+  barrels: [],
+  pickups: [],
+  style: {
+    roof: 'flat', windows: 'modern', tree: 'round', floorTex: 'concrete', streetTex: 'asphalt', landmark: 'sugarloaf',
+    brick: true, favela: true, viewNorth: true, sea: true, leaf: ['#4a7f35', '#5f9a42'], accent: ['#2b5fb8', '#e8483b', '#f2c12e', '#3aa35a', '#ffffff'],
+  },
+  look: {
+    sky: [[0, '#4a78c0'], [0.3, '#8ab0de'], [0.44, '#e8d2b8'], [0.5, '#ffd9a8'], [0.56, '#c9a888'], [1, '#7a6a52']],
+    fog: '#e8cfb0', fogDensity: 0.0042,
+    sunDir: [-0.55, 0.42, 0.72], sunColor: '#ffd2a0', sunIntensity: 2.6,
+    hemiSky: '#d8d4e8', hemiGround: '#8a6e52', hemiIntensity: 1.05,
+    ridge: ['#4f6e52', '#7a9478'], cloud: '#fff0e0', cloudGlow: '#e8b898', sunGlow: '#ffd8a8',
+    stucco: ['#c97a52', '#ee9fb4', '#7fbadc', '#f2d36a', '#9fd08c'], trim: ['#8a4a30', '#ffffff', '#2a5e8a', '#c0503a', '#3a7a4a'], roof: ['#a8a29a', '#9a948c', '#b4aea4'],
+    floor: '#b8b2a8', street: '#4a4a4e', grass: '#5f8a45', night: false,
+  },
+}
+
+export const REAL_MAPS: Partial<Record<MapId, MapDef>> & Record<'favela' | 'copacabana' | 'pelourinho' | 'veneza' | 'kyoto' | 'marrakech' | 'manhattan', MapDef> = {
+  favela: FAVELA,
   copacabana: COPACABANA,
   pelourinho: PELOURINHO,
   veneza: VENEZA,

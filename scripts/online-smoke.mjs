@@ -4,6 +4,8 @@
 import { spawn } from 'node:child_process'
 import { chromium } from 'playwright'
 
+/** Map the host picks (MAP=favela pnpm smoke:online). */
+const MAP = process.env.MAP ?? 'kyoto'
 const port = 8870 + Math.floor(Math.random() * 100)
 const server = spawn(process.execPath, ['server/match/server.ts'], { env: { ...process.env, PORT: String(port) }, stdio: 'inherit' })
 const url = `http://127.0.0.1:${port}/`
@@ -54,11 +56,11 @@ try {
   await b.click('.ol-ready-btn')
   await a.waitForFunction(() => !document.querySelector('.ol-start-btn').disabled, null, { timeout: 15000 })
   // The host picks the map; the guest's lobby follows.
-  await a.click('.ol-map.map-kyoto')
-  await b.waitForFunction(() => document.querySelector('.ol-map.on')?.classList.contains('map-kyoto'), null, { timeout: 10000 })
+  await a.click(`.ol-map.map-${MAP}`)
+  await b.waitForFunction(m => document.querySelector('.ol-map.on')?.classList.contains(`map-${m}`), MAP, { timeout: 10000 })
   await a.click('.ol-start-btn')
   for (const p of [a, b]) await p.waitForFunction(() => window.__game.game.tactical?.net && document.body.dataset.screen === 'hud', null, { timeout: 60000 })
-  for (const p of [a, b]) if ((await p.evaluate(() => window.__game.game.arena.def.id)) !== 'kyoto') fail('map choice did not reach both players')
+  for (const p of [a, b]) if ((await p.evaluate(() => window.__game.game.arena.def.id)) !== MAP) fail('map choice did not reach both players')
   // B moves; A must see the avatar follow.
   const z0 = (await info(a)).enemies[0]?.z
   if (z0 === undefined) fail('A does not see B')
@@ -93,7 +95,7 @@ try {
   if (rb.alive) fail('B survived the validated hits')
   if (ra.score[0] !== 1 || rb.score[1] !== 1) fail(`unexpected score A ${ra.score} B ${rb.score}`)
   if (errors.length) fail(errors.slice(0, 5).join('; '))
-  console.log(`online smoke: OK — room ${code}, map kyoto, movement ${z0.toFixed(1)} → ${z1.toFixed(1)}, round won ${ra.score.join('-')}`)
+  console.log(`online smoke: OK — room ${code}, map ${MAP}, movement ${z0.toFixed(1)} → ${z1.toFixed(1)}, round won ${ra.score.join('-')}`)
 } catch (e) {
   fail(String(e))
 }

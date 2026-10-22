@@ -9,8 +9,9 @@ Feito com Three.js (gráficos) e Rapier (física).
 - **Mata-mata** e **Sobrevivência** (8 ondas e um chefe) continuam disponíveis.
 - **Mapa "Base Aurora"**: dois locais de spike (A e B), meio, corredores e barreiras de spawn
   na fase de compra.
-- **7 mapas online inspirados em lugares reais**: Copacabana, Pelourinho, Veneza, Kyoto,
-  Marrakech, Manhattan e a Base Aurora; o anfitrião escolhe no lobby.
+- **8 mapas online inspirados em lugares reais**: Morro (favela do Rio, em ladeira, com vários
+  níveis), Copacabana, Pelourinho, Veneza, Kyoto, Marrakech, Manhattan e a Base Aurora; o
+  anfitrião escolhe no lobby.
 - **Um mapa por modo**: Tático na Base Aurora (dia), Mata-mata no Mercado (pôr do sol, praça
   compacta) e Sobrevivência na Fortaleza (noite, pátio com janelas e postes acesos).
 - **Online com amigos (2v2 a 5v5)**: no menu ONLINE, crie uma sala, mande o convite e jogue o

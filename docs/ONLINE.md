@@ -61,6 +61,7 @@ compra), mas cada um tem ruas, locais, coberturas, cores, céu, piso e um marco 
 | Mapa | Inspirado em | Destaques |
 | --- | --- | --- |
 | Base Aurora | vila mediterrânea | o mapa original |
+| Morro | favela do Rio de Janeiro | mapa em ladeira: o ataque sobe da rua, a defesa segura o alto; 4 níveis de terraço, escadarias, becos e rampa; casas de tijolo e coloridas com laje, caixa d'água e fiação; vista da cidade, do mar, do Pão de Açúcar e do Cristo |
 | Copacabana | Rio de Janeiro | calçadão de ondas, praia com guarda-sóis, Pão de Açúcar e Cristo no horizonte, mar |
 | Pelourinho | Salvador | casarões coloridos, paralelepípedo, igreja de torres gêmeas entre os locais |
 | Veneza | Veneza | canal atravessando o mapa com três pontes, gôndolas, campanário |

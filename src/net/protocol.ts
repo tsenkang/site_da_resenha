@@ -21,7 +21,7 @@ export const NET_RATE = 20
 export const MAX_NAME = 16
 export const ROOM_CODE_LENGTH = 5
 /** Tactical maps playable online (the host picks one in the lobby). */
-export const ONLINE_MAPS = ['aurora', 'copacabana', 'pelourinho', 'veneza', 'kyoto', 'marrakech', 'manhattan'] as const
+export const ONLINE_MAPS = ['aurora', 'favela', 'copacabana', 'pelourinho', 'veneza', 'kyoto', 'marrakech', 'manhattan'] as const
 export type OnlineMapId = (typeof ONLINE_MAPS)[number]
 
 export type Vec3 = [number, number, number]

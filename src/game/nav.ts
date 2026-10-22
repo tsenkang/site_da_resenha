@@ -14,7 +14,8 @@ export class NavGrid {
   private readonly parent: Int32Array
   private readonly state: Uint8Array
   private readonly heap: number[] = []
-  readonly maxStep = 0.55
+  /** Largest height change between neighbouring cells a path may take (hillside maps raise it for stairs). */
+  maxStep = 0.55
 
   constructor(readonly cols: number, readonly rows: number, readonly cell: number, readonly originX: number, readonly originZ: number) {
     const n = cols * rows
@@ -117,7 +118,7 @@ export class NavGrid {
     this.push(start)
     let found = false
     let iterations = 0
-    while (this.heap.length > 0 && iterations < 9000) {
+    while (this.heap.length > 0 && iterations < Math.max(9000, this.cols * this.rows)) {
       iterations += 1
       const cur = this.pop()
       if (cur === goal) {

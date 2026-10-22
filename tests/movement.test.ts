@@ -55,6 +55,33 @@ describe('player movement', () => {
     expect(p.speed2d).toBeGreaterThan(5)
   })
 
+  it('climbs a stair flight (0.3 m risers) and a 20° ramp like the hillside map', () => {
+    const { ph, p } = world()
+    // Stairs up to a 2.4 m terrace at z < −4 (eight 0.3 m steps, 0.45 m deep), climbing toward −z.
+    for (let i = 0; i < 8; i += 1) {
+      const len = (8 - i) * 0.45
+      ph.addStaticBox(new THREE.Vector3(0, (0.3 * (i + 1)) / 2, -4 + len / 2), new THREE.Vector3(3, 0.3 * (i + 1), len))
+    }
+    ph.addStaticBox(new THREE.Vector3(0, 1.2, -24), new THREE.Vector3(40, 2.4, 40))
+    ph.world.step()
+    for (let i = 0; i < 180; i += 1) step(ph, p, run({ sprint: false }))
+    expect(p.position.y).toBeGreaterThan(2.3)
+    expect(p.position.z).toBeLessThan(-6)
+    // A 20° ramp from the terrace up another 2.4 m.
+    const rise = 2.4
+    const runLen = rise / Math.tan((20 * Math.PI) / 180)
+    const a = Math.atan2(rise, runLen)
+    const n = new THREE.Vector3(0, Math.cos(a), Math.sin(a))
+    const c = new THREE.Vector3(0, 2.4 + rise / 2, -14 + runLen / 2).addScaledVector(n, -0.3)
+    ph.addStaticBox(c, new THREE.Vector3(3, 0.6, Math.hypot(rise, runLen)), new THREE.Quaternion().setFromEuler(new THREE.Euler(a, 0, 0)))
+    ph.addStaticBox(new THREE.Vector3(0, 2.4 + 1.2, -34), new THREE.Vector3(40, 2.4, 40))
+    ph.world.step()
+    p.spawn(new THREE.Vector3(0, 2.4, -6), 0)
+    ph.world.step()
+    for (let i = 0; i < 240; i += 1) step(ph, p, run({ sprint: false }))
+    expect(p.position.y).toBeGreaterThan(4.7)
+  })
+
   it('still jumps and lands', () => {
     const { ph, p } = world()
     for (let i = 0; i < 10; i += 1) step(ph, p, run())
