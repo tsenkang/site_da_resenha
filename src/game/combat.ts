@@ -2,12 +2,14 @@ import type * as THREE from 'three'
 import type { Audio } from '../engine/audio'
 import type { ColliderTag } from './arena'
 import type { Effects } from './fx'
+import type { GunId } from './gunSpecs'
 
 export type DamageSource =
   | 'pistol'
   | 'spike'
   | 'rifle' | 'shotgun' | 'rocket' | 'pulse' | 'scatter' | 'barrel' | 'fall'
   | 'grenade' | 'plasma' | 'cannon' | 'minigun' | 'slam' | 'kamikaze'
+  | GunId
 
 export type ProjectileKind = 'plasma' | 'cannon'
 
@@ -27,6 +29,8 @@ export type DamageInfo = {
   point?: THREE.Vector3
   normal?: THREE.Vector3
   headshot?: boolean
+  /** Share of the damage that gets past a shield (tactical guns; default: the target's own rule). */
+  pen?: number
   splash?: boolean
 }
 

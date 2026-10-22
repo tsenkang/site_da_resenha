@@ -4,6 +4,9 @@ import type { CombatWorld, DamageResult } from './combat'
 import { HEAD_Y } from './combat'
 import { buildPistol, buildRifle, buildRocket, buildShotgun, type ViewModel } from './guns'
 import { buildTripoPistol, buildTripoRifle, buildTripoRocket, buildTripoShotgun, type VmAssets } from './tripoguns'
+import { buildGunVM } from './gunModels'
+import { damageAt, GUN_IDS, recoilStep, type GunId, type GunSpec } from './gunSpecs'
+import { renderGunIcons } from './gunIcons'
 import type { Player } from './player'
 
 type Slot = { owned: boolean; mag: number; reserve: number }
@@ -17,9 +20,15 @@ export type ArsenalEvents = {
   message(key: string): void
 }
 
+/** Every weapon the Arsenal can hold: the arcade four, then the tactical guns. */
+const ALL_IDS: WeaponId[] = [...WEAPON_ORDER, ...GUN_IDS]
+/** Guns whose magazine sits in the pistol grip (pistol-style reload). */
+const MAG_IN_GRIP = new Set<WeaponId>(['mp7', 'mac10', 'glock', 'dualies', 'p250', 'deagle'])
+
 const tmp = new THREE.Vector3()
 const tmp2 = new THREE.Vector3()
 const tmpQ = new THREE.Quaternion()
+const tmpE = new THREE.Euler()
 
 function spring(s: Spring, target: number, k: number, d: number, dt: number): number {
   s.v += (target - s.x) * k * dt
@@ -55,7 +64,18 @@ export class Arsenal {
   private flashT = 0
   private dryT = 0
   private lastShot = -10
-  private readonly vms: Record<WeaponId, ViewModel>
+  /** Scope magnification step (0 = unscoped, 1.. = index into `gun.zoom` + 1). */
+  zoomLevel = 0
+  /** Accumulated spray recoil (radians): bullets follow all of it, the camera shows part of it. */
+  readonly recoil = { pitch: 0, yaw: 0 }
+  private sprayIndex = 0
+  /** Bolt-action cycle remaining (s): the scope drops while the bolt is worked. */
+  private boltT = 0
+  private altNext = false
+  private slideT = 0
+  private altSlideT = 0
+  private altFlashT = 0
+  private readonly vms: Partial<Record<WeaponId, ViewModel>>
   readonly holder = new THREE.Group()
   private readonly kickZ: Spring = { x: 0, v: 0 }
   private readonly kickRot: Spring = { x: 0, v: 0 }
@@ -96,15 +116,10 @@ export class Arsenal {
       vm.pumpRest ??= vm.pump?.position.clone()
     }
     for (const id of WEAPON_ORDER) {
-      this.vms[id].root.visible = false
-      this.holder.add(this.vms[id].root)
+      this.vms[id]!.root.visible = false
+      this.holder.add(this.vms[id]!.root)
     }
-    this.slots = {
-      rifle: { owned: true, mag: 0, reserve: 0 },
-      shotgun: { owned: true, mag: 0, reserve: 0 },
-      rocket: { owned: false, mag: 0, reserve: 0 },
-      pistol: { owned: false, mag: 0, reserve: 0 },
-    }
+    this.slots = Object.fromEntries(ALL_IDS.map(id => [id, { owned: id === 'rifle' || id === 'shotgun', mag: 0, reserve: 0 }])) as Record<WeaponId, Slot>
     this.muzzleLight = new THREE.PointLight('#ffb35c', 0, 9, 1.8)
     this.muzzleLight.position.set(0.15, -0.05, -0.9)
     camera.add(this.holder)
@@ -117,7 +132,7 @@ export class Arsenal {
   upgradeRocket(): void {
     const A = this.vmAssets()
     if (this.tripoRocket || !A.launcher || !A.armR || !A.armL) return
-    const old = this.vms.rocket
+    const old = this.vms.rocket!
     const vm = buildTripoRocket(A, this.world.fx.flashTexture, this.world.fx.flameTexture)
     vm.root.visible = old.root.visible
     this.holder.remove(old.root)
@@ -129,6 +144,33 @@ export class Arsenal {
   get def(): WeaponDef {
     return WEAPONS[this.current]
   }
+  /** Tactical gun spec of the weapon in hand (undefined for the arcade weapons). */
+  get gun(): GunSpec | undefined {
+    return WEAPONS[this.current].gun
+  }
+
+  /** Viewmodel of a weapon, built on first use (tactical guns are only built when bought). */
+  private vm(id: WeaponId): ViewModel {
+    let vm = this.vms[id]
+    if (!vm) {
+      vm = buildGunVM(id as Exclude<WeaponId, 'rifle' | 'shotgun' | 'rocket' | 'pistol'>, this.vmAssets(), this.world.fx.flashTexture, this.world.fx.flameTexture)
+      vm.root.visible = false
+      this.holder.add(vm.root)
+      this.vms[id] = vm
+    }
+    return vm
+  }
+
+  private icons?: Record<GunId, string>
+  /** Buy-menu icons of every tactical gun (rendered once from the models, on first use). */
+  gunIcons(gl: THREE.WebGLRenderer): Record<GunId, string> {
+    return (this.icons ??= renderGunIcons(gl, this.vmAssets(), this.world.fx.flashTexture, this.world.fx.flameTexture))
+  }
+
+  /** Owned weapons in cycle order. */
+  private get owned(): WeaponId[] {
+    return ALL_IDS.filter(id => this.slots[id].owned)
+  }
   get slot(): Slot {
     return this.slots[this.current]
   }
@@ -137,6 +179,8 @@ export class Arsenal {
   }
   /** Current spread cone radius in radians (for the crosshair). */
   get spread(): number {
+    const g = this.gun
+    if (g) return this.gunSpread(g)
     const d = this.def
     const move = Math.min(1, this.player.speed2d / CONFIG.player.walkSpeed)
     const air = this.player.grounded ? 0 : 1
@@ -144,14 +188,53 @@ export class Arsenal {
     return base * (1 + move * 0.9 * (1 - this.ads * 0.7) + air * 1.6) + this.bloom * (1 - this.ads * 0.5)
   }
 
+  /** Scoped right now (scope up, not cycling the bolt, reloading or switching). */
+  get scoped(): boolean {
+    return this.zoomLevel > 0 && !!this.gun?.zoom && this.boltT <= 0 && this.reloading <= 0 && !this.switching
+  }
+  /** Current scope magnification (1 when not scoped). */
+  get zoom(): number {
+    return this.scoped ? this.gun!.zoom![this.zoomLevel - 1] : 1
+  }
+  /** Movement speed multiplier from the weapon in hand (heavy guns and scopes slow you down). */
+  get speedScale(): number {
+    const g = this.gun
+    if (!g) return 1
+    return this.scoped ? (g.scopedSpeed ?? g.speed) : g.speed
+  }
+  /** Mouse sensitivity multiplier (lower while aiming / scoped, so the zoom does not feel twitchy). */
+  get lookScale(): number {
+    if (this.scoped) return 1 / this.zoom
+    return 1 - this.ads * 0.35
+  }
+
+  /**
+   * Tactical gun accuracy: accurate standing still, inaccurate running and in the air,
+   * better crouched; snipers are only precise scoped; bloom grows with each shot of a spray.
+   */
+  private gunSpread(g: GunSpec): number {
+    const P = this.player
+    const sp = g.spread
+    const moveFrac = THREE.MathUtils.smoothstep(P.speed2d / (CONFIG.player.walkSpeed * g.speed), 0.3, 0.9)
+    let base: number
+    if (g.sight === 'scope' && g.scoped !== undefined) base = this.scoped ? g.scoped : sp.stand
+    else base = sp.stand * (1 - this.ads * (g.cls === 'shotgun' ? 0.15 : 0.35))
+    base += sp.move * moveFrac
+    if (!P.grounded) base += sp.air
+    if (P.crouch > 0.5 && P.grounded) base *= 0.8
+    return base + this.bloom
+  }
+
   reset(): void {
-    for (const id of WEAPON_ORDER) {
+    for (const id of ALL_IDS) {
       const d = WEAPONS[id]
       const s = this.slots[id]
       s.owned = id === 'rifle' || id === 'shotgun'
       s.mag = s.owned ? d.mag : 0
       s.reserve = s.owned ? d.reserveStart : 0
     }
+    this.zoomLevel = 0
+    this.recoil.pitch = this.recoil.yaw = 0
     this.current = 'rifle'
     this.previous = 'shotgun'
     this.reloading = 0
@@ -168,8 +251,9 @@ export class Arsenal {
   }
 
   private showCurrent(): void {
-    for (const id of WEAPON_ORDER) this.vms[id].root.visible = id === this.current
-    const vm = this.vms.rocket
+    this.vm(this.current)
+    for (const [id, vm] of Object.entries(this.vms)) vm.root.visible = id === this.current
+    const vm = this.vms.rocket!
     if (vm.warhead) vm.warhead.visible = this.slots.rocket.mag > 0
   }
 
@@ -188,10 +272,10 @@ export class Arsenal {
    * Tactical round start: own exactly the pistol plus an optional primary. Survivors keep their
    * magazines (`keepAmmo`); a fresh purchase or a dead player gets full ammo.
    */
-  setLoadout(primary: WeaponId | null, keepAmmo: boolean): void {
-    for (const id of WEAPON_ORDER) {
+  setLoadout(primary: WeaponId | null, keepAmmo: boolean, sidearm: WeaponId = 'pistol'): void {
+    for (const id of ALL_IDS) {
       const s = this.slots[id]
-      const own = id === 'pistol' || id === primary
+      const own = id === sidearm || id === primary
       if (own && (!s.owned || !keepAmmo)) {
         s.mag = WEAPONS[id].mag
         s.reserve = WEAPONS[id].reserveStart
@@ -199,8 +283,10 @@ export class Arsenal {
       s.owned = own
       if (!own) s.mag = s.reserve = 0
     }
-    this.current = primary ?? 'pistol'
-    this.previous = 'pistol'
+    this.current = primary ?? sidearm
+    this.previous = sidearm
+    this.zoomLevel = 0
+    this.recoil.pitch = this.recoil.yaw = 0
     this.reloading = 0
     this.cooldown = 0
     this.bloom = 0
@@ -234,12 +320,12 @@ export class Arsenal {
   quickSwitch(): void {
     const cur = this.switchTo ?? this.current
     let target: WeaponId = this.switchTo ? this.current : this.previous
-    if (target === cur || !this.slots[target]?.owned) target = WEAPON_ORDER.find(id => id !== cur && this.slots[id].owned) ?? cur
+    if (target === cur || !this.slots[target]?.owned) target = this.owned.find(id => id !== cur) ?? cur
     if (target !== cur) this.select(target)
   }
 
   cycle(dir: number): void {
-    const owned = WEAPON_ORDER.filter(id => this.slots[id].owned)
+    const owned = this.owned
     const from = owned.indexOf(this.switchTo ?? this.current)
     this.select(owned[(from + dir + owned.length) % owned.length])
   }
@@ -269,11 +355,11 @@ export class Arsenal {
     } else {
       this.reloadTotal = d.reload / this.mods.reload
       this.reloading = this.reloadTotal
-      this.reloadSound = this.world.audio.play(this.current === 'rocket' ? 'rocket_reload' : 'rifle_reload', { volume: 0.9, jitter: 0.02 })
+      this.reloadSound = this.world.audio.play(this.current === 'rocket' ? 'rocket_reload' : 'rifle_reload', { volume: 0.9, jitter: 0.02, rate: this.gun ? 2.1 / Math.max(1, this.def.reload) : 1 })
     }
   }
 
-  step(dt: number, input: { fire: boolean; firePressed: boolean; ads: boolean; reload: boolean }, eye: THREE.Vector3, sprinting: boolean): void {
+  step(dt: number, input: { fire: boolean; firePressed: boolean; ads: boolean; adsPressed?: boolean; reload: boolean }, eye: THREE.Vector3, sprinting: boolean): void {
     this.shotsThisStep = 0
     this.hitsThisStep = 0
     this.damageThisStep = 0
@@ -281,7 +367,19 @@ export class Arsenal {
     this.dryT = Math.max(0, this.dryT - dt)
     const d = this.def
     const s = this.slot
-    this.bloom = Math.max(0, this.bloom - dt * (this.world.time - this.lastShot > 0.12 ? 0.12 : 0.02))
+    const g = this.gun
+    const since = this.world.time - this.lastShot
+    this.bloom = Math.max(0, this.bloom - dt * (since > (g ? Math.max(0.12, g.interval * 1.4) : 0.12) ? (g ? g.spread.bloomMax / Math.max(0.15, g.recoil.recover) : 0.12) : 0.02))
+    this.boltT = Math.max(0, this.boltT - dt)
+    this.slideT = Math.max(0, this.slideT - dt)
+    this.altSlideT = Math.max(0, this.altSlideT - dt)
+    // Spray recoil recovers once the trigger is released (the crosshair settles back).
+    if (g && since > g.interval * 1.25) {
+      const k = Math.exp(-dt * (3.2 / g.recoil.recover))
+      this.recoil.pitch *= k
+      this.recoil.yaw *= k
+      if (since > g.recoil.recover) this.sprayIndex = 0
+    }
     // Switching: lower old weapon, then raise the new one.
     if (this.switchTo) {
       this.switchT -= dt
@@ -299,8 +397,18 @@ export class Arsenal {
       this.switchT = Math.max(0, this.switchT - dt)
       return
     }
-    const wantAds = input.ads && !sprinting && this.reloading <= 0
-    this.ads += ((wantAds ? 1 : 0) - this.ads) * Math.min(1, dt * 14)
+    if (g?.zoom) {
+      // Scoped guns: right click steps through the zoom levels and back out (like CS).
+      if (input.adsPressed && this.reloading <= 0) {
+        this.zoomLevel = (this.zoomLevel + 1) % (g.zoom.length + 1)
+        this.world.audio.play('weapon_switch', { volume: 0.3, rate: 1.8 })
+      }
+      if (sprinting) this.zoomLevel = 0
+      this.ads += ((this.scoped ? 1 : 0) - this.ads) * Math.min(1, dt * 20)
+    } else {
+      const wantAds = input.ads && !sprinting && this.reloading <= 0
+      this.ads += ((wantAds ? 1 : 0) - this.ads) * Math.min(1, dt * 14)
+    }
     if (input.reload) this.startReload()
     // Reload progress.
     if (this.reloading > 0) {
@@ -343,7 +451,7 @@ export class Arsenal {
       else if (this.dryT <= 0) {
         this.world.audio.play('dry_fire', { volume: 0.9 })
         this.dryT = 0.35
-        const alt = WEAPON_ORDER.find(id => id !== this.current && this.slots[id].owned && this.slots[id].mag + this.slots[id].reserve > 0)
+        const alt = this.owned.find(id => id !== this.current && this.slots[id].mag + this.slots[id].reserve > 0)
         if (alt) this.select(alt)
         else this.events.message('msg.noAmmo')
       }
@@ -358,13 +466,39 @@ export class Arsenal {
     if (!this.mods.infinite) s.mag -= 1
     this.cooldown = d.interval / this.mods.rate
     this.lastShot = this.world.time
+    const g = this.gun
     const forward = this.player.forward(tmp)
-    const vm = this.vms[this.current]
-    vm.muzzle.getWorldPosition(this.muzzleWorld)
+    const vm = this.vm(this.current)
+    const useAlt = !!(g?.dual && vm.alt && this.altNext)
+    this.altNext = !this.altNext
+    ;(useAlt ? vm.alt!.muzzle : vm.muzzle).getWorldPosition(this.muzzleWorld)
+    if (g) {
+      // Spray pattern: the bullets follow the full accumulated recoil, the camera only part of it.
+      const [rp, ry] = recoilStep(g, this.sprayIndex++)
+      const adsK = (this.scoped ? 0.85 : 1 - this.ads * 0.15) * (this.player.crouch > 0.5 ? 0.85 : 1) * 0.8
+      this.recoil.pitch += rp * adsK
+      this.recoil.yaw += ry * adsK
+      tmpE.set(this.player.pitch + this.recoil.pitch, this.player.yaw + this.recoil.yaw, 0, 'YXZ')
+      forward.set(0, 0, -1).applyEuler(tmpE)
+    }
     const muzzle = this.muzzleWorld
     // Sound + muzzle.
     const A = this.world.audio
-    if (this.current === 'rifle') {
+    if (g) {
+      this.gunSound(g)
+      if (s.mag <= Math.ceil(g.mag * 0.2) && s.mag > 0) A.cue('lowAmmo', 0.8)
+      if (g.pump) this.pumpT = Arsenal.PUMP
+      if (g.bolt) {
+        this.boltT = g.interval * 0.9
+        window.setTimeout(() => {
+          if (this.current === g.id) A.play('shotgun_pump', { volume: 0.45, rate: 1.7 })
+        }, 260)
+      }
+      if (g.dual || g.cls === 'pistol') {
+        if (useAlt) this.altSlideT = 0.07
+        else this.slideT = 0.07
+      }
+    } else if (this.current === 'rifle') {
       A.play('rifle_shot', { volume: 0.95, jitter: 0.045 })
       if (s.mag <= 6 && s.mag > 0) A.cue('lowAmmo', 0.8)
     } else if (this.current === 'shotgun') {
@@ -378,17 +512,25 @@ export class Arsenal {
     } else {
       A.play('rocket_launch', { volume: 1, jitter: 0.03 })
     }
-    this.world.noise(eye, 0, this.current === 'rocket' ? 40 : 34)
-    this.flashT = this.current === 'shotgun' ? 0.06 : 0.045
+    this.world.noise(eye, 0, this.current === 'rocket' ? 40 : g?.cls === 'sniper' ? 46 : 34)
+    const flashT = this.current === 'shotgun' || g?.cls === 'shotgun' || g?.cls === 'sniper' ? 0.06 : 0.045
+    if (useAlt) this.altFlashT = flashT
+    else this.flashT = flashT
     this.muzzleLight.intensity = this.current === 'rocket' ? 30 : this.current === 'shotgun' ? 26 : 16
     // Kick: aim recoil (partly permanent), visual punch, viewmodel spring.
     const adsK = 1 - this.ads * 0.45
     const pitchKick = d.recoilPitch * (0.8 + Math.random() * 0.4) * adsK
     const yawKick = (Math.random() * 2 - 1) * d.recoilYaw * adsK
-    this.player.pitch = Math.min(1.45, this.player.pitch + pitchKick * 0.55)
-    this.player.yaw -= yawKick * 0.55
-    this.punch.pitch += pitchKick * 0.9
-    this.punch.yaw += yawKick * 0.6
+    if (g) {
+      // The view punch is a fraction of the spray (the rest is where the bullets go).
+      this.punch.pitch += pitchKick * 0.35
+      this.punch.yaw += yawKick * 0.2
+    } else {
+      this.player.pitch = Math.min(1.45, this.player.pitch + pitchKick * 0.55)
+      this.player.yaw -= yawKick * 0.55
+      this.punch.pitch += pitchKick * 0.9
+      this.punch.yaw += yawKick * 0.6
+    }
     this.punch.roll += (Math.random() * 2 - 1) * 0.012 * d.punch
     this.kickZ.v += 1.9 * d.punch * (1 - this.ads * 0.4)
     this.kickRot.v += 7 * d.punch * (1 - this.ads * 0.5)
@@ -396,8 +538,18 @@ export class Arsenal {
     this.bloom = Math.min(d.bloomMax, this.bloom + d.bloom)
     this.events.fired(this.current, d.shake)
     // Shell ejection (rifle immediately, shotgun on pump).
-    if (vm.eject && (this.current === 'rifle' || this.current === 'pistol')) this.ejectShell(vm, this.current === 'pistol' ? 0.7 : 1)
-    if (vm.eject && this.current === 'shotgun') window.setTimeout(() => this.ejectShell(vm, 1.6), 120)
+    if (g) {
+      const port = useAlt ? vm.alt!.eject : vm.eject
+      const power = g.cls === 'pistol' ? 0.7 : g.cls === 'shotgun' ? 1.6 : 1
+      if (port) {
+        if (g.pump) window.setTimeout(() => this.ejectShell(vm, power, port), 120)
+        else if (g.bolt) window.setTimeout(() => this.ejectShell(vm, 0.9, port), 330)
+        else this.ejectShell(vm, power, port)
+      }
+    } else {
+      if (vm.eject && (this.current === 'rifle' || this.current === 'pistol')) this.ejectShell(vm, this.current === 'pistol' ? 0.7 : 1)
+      if (vm.eject && this.current === 'shotgun') window.setTimeout(() => this.ejectShell(vm, 1.6), 120)
+    }
     if (this.current === 'rocket') {
       if (vm.warhead) vm.warhead.visible = false
       const dir = this.aimDirection(forward, this.spread)
@@ -411,7 +563,8 @@ export class Arsenal {
       if (s.mag <= 0 && s.reserve > 0) window.setTimeout(() => this.startReload(), 450)
       return
     }
-    this.world.fx.muzzle(muzzle.clone(), forward, [4, 2.6, 1.2, 1], this.current === 'shotgun' ? 1.8 : 1)
+    const shotty = this.current === 'shotgun' || g?.cls === 'shotgun'
+    this.world.fx.muzzle(muzzle.clone(), forward, [4, 2.6, 1.2, 1], shotty ? 1.8 : g?.cls === 'sniper' ? 1.6 : g?.cls === 'pistol' ? 0.75 : 1)
     const pellets = d.pellets
     let anyHit = false
     let totalDamage = 0
@@ -424,16 +577,16 @@ export class Arsenal {
       const dir = this.aimDirection(forward, this.spread)
       const hit = this.world.raycast(eye, dir, d.range, this.player.collider.handle)
       const end = hit ? hit.point : tmp2.copy(eye).addScaledVector(dir, d.range)
-      if (this.current === 'rifle' || p % 3 === 0) this.world.fx.tracer(muzzle, end, [5, 3.4, 1.6, 0.9], 340, this.current === 'rifle' ? 0.022 : 0.018)
+      if (!shotty || p % 3 === 0) this.world.fx.tracer(muzzle, end, [5, 3.4, 1.6, 0.9], g?.cls === 'sniper' ? 520 : 340, g?.cls === 'sniper' ? 0.03 : shotty ? 0.018 : 0.022)
       if (!hit) continue
       const tag = hit.tag
       if (tag?.kind === 'bot') {
         const isHead = this.isHead(tag.id, hit.point)
         const weak = this.weakMult(tag.id, hit.point)
-        let dmg = this.baseDamage * (isHead ? d.headMultiplier : 1) * weak
+        let dmg = (g ? damageAt(g, hit.distance) * this.mods.damage : this.baseDamage) * (isHead ? d.headMultiplier : 1) * weak
         if (this.current === 'shotgun') dmg *= Math.max(0.25, 1 - Math.max(0, hit.distance - 6) / 22)
         if (this.current === 'rifle') dmg *= Math.max(0.6, 1 - Math.max(0, hit.distance - 30) / 80)
-        const r: DamageResult = this.world.damage(tag.id, { attacker: 0, amount: dmg, source: this.current, from: eye.clone(), point: hit.point.clone(), normal: hit.normal.clone(), headshot: isHead })
+        const r: DamageResult = this.world.damage(tag.id, { attacker: 0, amount: dmg, source: this.current, from: eye.clone(), point: hit.point.clone(), normal: hit.normal.clone(), headshot: isHead, pen: g?.armorPen })
         hitTargets.set(tag.id, (hitTargets.get(tag.id) ?? 0) + r.dealt)
         anyHit = anyHit || r.dealt > 0
         totalDamage += r.dealt
@@ -442,14 +595,14 @@ export class Arsenal {
         armorOnly = armorOnly && r.armor
         hitPoint = hit.point.clone()
         if (this.world.isHuman(tag.id)) {
-          this.world.fx.humanHit(hit.point, hit.normal, this.current === 'shotgun' || isHead)
+          this.world.fx.humanHit(hit.point, hit.normal, shotty || isHead)
           this.world.audio.play('human_hit', { volume: 0.45, pos: hit.point, jitter: 0.12 })
         } else {
-          this.world.fx.robotHit(hit.point, hit.normal, this.current === 'shotgun' || isHead || weak > 1)
+          this.world.fx.robotHit(hit.point, hit.normal, shotty || isHead || weak > 1)
           this.world.audio.play('impact_metal', { volume: 0.35, pos: hit.point, jitter: 0.12 })
         }
       } else if (tag?.kind === 'drone') {
-        let dmg = this.baseDamage
+        let dmg = g ? damageAt(g, hit.distance) * this.mods.damage : this.baseDamage
         if (this.current === 'shotgun') dmg *= Math.max(0.3, 1 - Math.max(0, hit.distance - 8) / 24)
         const r = this.world.damageDrone(tag.id, { attacker: 0, amount: dmg, source: this.current, from: eye.clone(), point: hit.point.clone(), normal: hit.normal.clone() })
         hitTargets.set(-1 - tag.id, (hitTargets.get(-1 - tag.id) ?? 0) + r.dealt)
@@ -489,9 +642,34 @@ export class Arsenal {
     return this.def.damage * m.damage * (this.current === 'rifle' ? m.rifleDamage : this.current === 'shotgun' ? m.shotgunDamage : 1)
   }
 
-  private ejectShell(vm: ViewModel, power: number): void {
-    if (!vm.eject) return
-    const pos = vm.eject.getWorldPosition(new THREE.Vector3())
+  /** Gunshot by weapon class: snappy pistols, chattering SMGs, heavy rifles, booming snipers. */
+  private gunSound(g: GunSpec): void {
+    const A = this.world.audio
+    switch (g.cls) {
+      case 'pistol':
+        if (g.id === 'deagle') {
+          A.play('rifle_shot', { volume: 1, rate: 0.95, jitter: 0.03 })
+          A.play('shotgun_shot', { volume: 0.35, rate: 1.5, jitter: 0.03 })
+        } else A.play('rifle_shot', { volume: 0.7, rate: g.id === 'tec9' ? 1.55 : g.id === 'p250' ? 1.32 : 1.45, jitter: 0.05 })
+        break
+      case 'smg':
+        A.play('rifle_shot', { volume: 0.75, rate: g.id === 'p90' ? 1.3 : g.id === 'mac10' ? 1.38 : 1.22, jitter: 0.05 })
+        break
+      case 'shotgun':
+        A.play('shotgun_shot', { volume: 1, rate: g.id === 'xm1014' ? 1.08 : 1, jitter: 0.03 })
+        break
+      case 'sniper':
+        A.play('rifle_shot', { volume: 1.1, rate: g.id === 'awp' ? 0.62 : 0.78, jitter: 0.02 })
+        A.play('shotgun_shot', { volume: g.id === 'awp' ? 0.7 : 0.4, rate: 1.35, jitter: 0.02 })
+        break
+      default:
+        A.play('rifle_shot', { volume: 0.95, rate: g.id === 'ak47' ? 0.9 : g.id === 'galil' ? 1 : 1.06, jitter: 0.045 })
+    }
+  }
+
+  private ejectShell(vm: ViewModel, power: number, port = vm.eject): void {
+    if (!port) return
+    const pos = port.getWorldPosition(new THREE.Vector3())
     const q = this.camera.getWorldQuaternion(tmpQ)
     const v = new THREE.Vector3(1.6 + Math.random() * 0.8, 1.4 + Math.random() * 0.8, 0.4).multiplyScalar(power).applyQuaternion(q)
     v.add(this.player.velocity)
@@ -509,7 +687,10 @@ export class Arsenal {
 
   /** Per-frame viewmodel animation. `look` is this frame's mouse delta. */
   animate(dt: number, look: { x: number; y: number }, reducedMotion: boolean): void {
-    const vm = this.vms[this.current]
+    const vm = this.vm(this.current)
+    const g = this.gun
+    /** Which reload choreography the weapon uses. */
+    const anim: WeaponId = g ? (g.cls === 'shotgun' ? 'shotgun' : g.cls === 'pistol' || MAG_IN_GRIP.has(this.current) ? 'pistol' : 'rifle') : this.current
     const P = this.player
     // Punch recovery.
     const rec = Math.exp(-dt * 9)
@@ -536,10 +717,10 @@ export class Arsenal {
     const by = -Math.abs(Math.cos(this.bobPhase)) * 0.012 * this.bobAmount * bobK
     const breathe = Math.sin(this.world.time * 1.6) * 0.0022 * (1 - this.ads * 0.8)
     // Hip vs ADS pose.
-    const hip = vm.hip ? tmp.copy(vm.hip) : this.current === 'rocket' ? new THREE.Vector3(0.22, -0.2, -0.36) : this.current === 'shotgun' ? new THREE.Vector3(0.17, -0.2, -0.38) : new THREE.Vector3(0.16, -0.19, -0.4)
+    const hip = vm.hip ? tmp.copy(vm.hip) : this.current === 'rocket' ? new THREE.Vector3(0.22, -0.2, -0.36) : anim === 'shotgun' ? new THREE.Vector3(0.17, -0.2, -0.38) : new THREE.Vector3(0.16, -0.19, -0.4)
     const ads = vm.ads
       ? tmp2.set(vm.ads.x, vm.ads.y ?? -vm.sightY, vm.ads.z)
-      : new THREE.Vector3(this.current === 'rocket' ? 0.08 : 0, -vm.sightY, this.current === 'rocket' ? -0.2 : this.current === 'shotgun' ? -0.24 : -0.2)
+      : new THREE.Vector3(this.current === 'rocket' ? 0.08 : 0, -vm.sightY, this.current === 'rocket' ? -0.2 : anim === 'shotgun' ? -0.24 : -0.2)
     const pos = hip.lerp(ads, this.ads)
     const root = vm.root
     root.position.set(pos.x + bx + this.swayX.x * 0.3, pos.y + by + breathe + this.land.x * 0.05 + this.swayY.x * 0.25, pos.z + this.kickZ.x * 0.035)
@@ -565,7 +746,7 @@ export class Arsenal {
     if (this.reloading > 0) {
       const t = 1 - this.reloading / this.reloadTotal
       const inOut = Math.min(1, t * 6, (1 - t) * 5)
-      if (this.current === 'rifle') {
+      if (anim === 'rifle') {
         root.rotation.z += 0.55 * inOut
         root.rotation.x += 0.18 * inOut
         root.position.y -= 0.04 * inOut
@@ -576,13 +757,13 @@ export class Arsenal {
           vm.mag.rotation.x = out * 0.4
         }
         if (t > 0.8 && t < 0.9) root.position.z += Math.sin(((t - 0.8) / 0.1) * Math.PI) * 0.02
-      } else if (this.current === 'shotgun') {
+      } else if (anim === 'shotgun') {
         root.rotation.z -= 0.45 * inOut
         root.rotation.x += 0.2 * inOut
         root.position.y -= 0.03 * inOut
         const cycle = ((this.reloadTotal - this.reloading - 0.3) / this.shellTime) % 1
         if (t > 0.1 && this.shellsQueued > 0) root.position.y += Math.sin(Math.max(0, cycle) * Math.PI) * 0.012
-      } else if (this.current === 'pistol') {
+      } else if (anim === 'pistol') {
         // Tilt the pistol in, drop the magazine out of the grip, seat a new one, rack the slide.
         root.rotation.z += 0.5 * inOut
         root.rotation.x += 0.25 * inOut
@@ -604,19 +785,46 @@ export class Arsenal {
       vm.pump.position.z = (vm.pumpRest?.z ?? -0.33) + slide * 0.09
       if (slide > 0) root.rotation.x += slide * 0.05
     }
+    // Bolt action: lift the rifle a little while the bolt is worked.
+    if (g?.bolt && this.boltT > 0) {
+      const bt = 1 - this.boltT / (g.interval * 0.9)
+      const b = Math.sin(Math.min(1, bt * 1.3) * Math.PI)
+      root.rotation.z += 0.25 * b
+      root.position.y -= 0.02 * b
+      if (vm.bolt) vm.bolt.position.z += 0.06 * b
+    }
+    // Pistol slides rack back on each shot.
+    const rack = (o: THREE.Object3D | undefined, t: number) => {
+      if (!o) return
+      const rz = (o.userData.restZ ??= o.position.z) as number
+      o.position.z = rz + (t > 0 ? Math.sin((t / 0.07) * Math.PI) * 0.025 : 0)
+    }
+    rack(vm.slide, this.slideT)
+    rack(vm.alt?.slide, this.altSlideT)
     // Muzzle flash + light.
     this.flashT = Math.max(0, this.flashT - dt)
-    vm.flash.visible = this.flashT > 0
-    if (vm.flash.visible) {
-      vm.flash.rotation.z = Math.random() * Math.PI * 2
-      vm.flash.scale.setScalar(0.8 + Math.random() * 0.5)
+    this.altFlashT = Math.max(0, this.altFlashT - dt)
+    const flashes: [THREE.Group | undefined, number][] = [[vm.flash, this.flashT], [vm.alt?.flash, this.altFlashT]]
+    for (const [f, t] of flashes) {
+      if (!f) continue
+      f.visible = t > 0
+      if (f.visible) {
+        f.rotation.z = Math.random() * Math.PI * 2
+        f.scale.setScalar(0.8 + Math.random() * 0.5)
+      }
     }
     this.muzzleLight.intensity *= Math.exp(-dt * 40)
-    this.holder.visible = P.alive
+    // Behind a scope the gun is out of view (the scope overlay replaces it).
+    this.holder.visible = P.alive && !this.scoped
   }
 
   /** Viewmodel field-of-view target when aiming. */
   fovScale(): number {
+    if (this.scoped) {
+      // Real magnification: tan(fov/2) shrinks by the zoom factor.
+      const half = THREE.MathUtils.degToRad(CONFIG.camera.fov) / 2
+      return THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(half) / this.zoom)) / (CONFIG.camera.fov)
+    }
     const d = this.def
     return 1 + (d.adsFov / 78 - 1) * this.ads
   }

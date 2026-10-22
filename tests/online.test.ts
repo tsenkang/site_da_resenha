@@ -13,7 +13,7 @@ const fakeConn = (id: string): Fake => {
   const inbox: ServerMessage[] = []
   return { id, name: id.toUpperCase(), inbox, send: m => inbox.push(m) }
 }
-const frame = (pos: Vec3, seq = 1): PlayerFrame => ({ seq, pos, yaw: 0, pitch: 0, flags: 0, weapon: 'pistol' })
+const frame = (pos: Vec3, seq = 1): PlayerFrame => ({ seq, pos, yaw: 0, pitch: 0, flags: 0, weapon: 'glock' })
 const last = <T extends ServerMessage['t']>(c: Fake, t: T) => c.inbox.filter(m => m.t === t).at(-1) as Extract<ServerMessage, { t: T }> | undefined
 
 /** 2v2 room with one human per team (a attacks first) in combat. */
@@ -60,9 +60,9 @@ describe('online room rules', () => {
     room.handle(carrier, { t: 'frame', f: frame([5, 0, 5]) })
     room.handle(mate, { t: 'frame', f: frame([20, 0, 20]) })
     room.handle('b', { t: 'frame', f: frame([5, 0, 12]) })
-    room.handle('b', { t: 'hit', h: { target: carrier, damage: 78, headshot: true, weapon: 'pistol', distance: 7 } })
+    room.handle('b', { t: 'hit', h: { target: carrier, damage: 78, headshot: true, weapon: 'glock', distance: 7 } })
     room.tick(0.3)
-    room.handle('b', { t: 'hit', h: { target: carrier, damage: 78, headshot: true, weapon: 'pistol', distance: 7 } })
+    room.handle('b', { t: 'hit', h: { target: carrier, damage: 78, headshot: true, weapon: 'glock', distance: 7 } })
     expect(room.state!.spike.carrier).toBeNull()
     expect(room.spikePos).toEqual([5, 0, 5])
     // The defender cannot take it; the attacking teammate can.
@@ -116,14 +116,13 @@ describe('online room rules', () => {
     expect(b.inbox.length).toBe(before)
   })
 
-  it('accepts two rifle-speed hits that land in the same server tick', () => {
+  it('caps hits that land in the same server tick at the fire budget', () => {
     const { room, a, b } = combatRoom()
     room.handle('a', { t: 'frame', f: frame([0, 0, 10]) })
     room.handle('b', { t: 'frame', f: frame([0, 0, 0]) })
     room.tick(0.2)
-    room.handle('a', { t: 'hit', h: { target: 'b', damage: 20, headshot: false, weapon: 'pistol', distance: 10 } })
-    room.handle('a', { t: 'hit', h: { target: 'b', damage: 20, headshot: false, weapon: 'pistol', distance: 10 } })
-    expect(b.inbox.filter(m => m.t === 'damage')).toHaveLength(1)
+    for (let i = 0; i < 4; i += 1) room.handle('a', { t: 'hit', h: { target: 'b', damage: 20, headshot: false, weapon: 'glock', distance: 10 } })
+    expect(b.inbox.filter(m => m.t === 'damage')).toHaveLength(2)
     void a
   })
 })

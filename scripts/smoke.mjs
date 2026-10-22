@@ -63,7 +63,7 @@ async function run(context, button, label, n) {
     await page.evaluate(() => {
       const t = window.__game.game.tactical
       t.state.players.find(p => p.id === 0).credits = 4000
-      if (!t.buy('rifle').ok) throw new Error('buy failed')
+      if (!t.buy('ak47').ok) throw new Error('buy failed')
     })
   }
   const before = await state(page)

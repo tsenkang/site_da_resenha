@@ -6,13 +6,15 @@
  * match against bots today and is imported by the online match server (server/match), so a client
  * and the authoritative server always agree on round results and the economy.
  */
+import { DEFAULT_PISTOL, GUN_IDS, GUNS, isPistol, type GunId, type PistolId, type PrimaryId } from './gunSpecs.ts'
 
 export type TeamIndex = 0 | 1
 export type Side = 'attack' | 'defend'
 export type TacticalPhase = 'buy' | 'combat' | 'planted' | 'roundEnd' | 'matchEnd'
 export type SiteId = 'A' | 'B'
-export type LoadoutWeapon = 'pistol' | 'shotgun' | 'rifle'
-export type ShopItem = 'shotgun' | 'rifle' | 'lightShield' | 'heavyShield' | 'smoke' | 'grenade'
+/** A gun from the tactical arsenal (gunSpecs.ts). */
+export type LoadoutWeapon = GunId
+export type ShopItem = GunId | 'lightShield' | 'heavyShield' | 'smoke' | 'grenade'
 export type RoundEndReason = 'elimination' | 'detonated' | 'defused' | 'time'
 
 /** Supported team sizes: 2v2 … 5v5. */
@@ -46,19 +48,24 @@ export function tacticalConfig(teamSize: TeamSize, preset: keyof typeof TACTICAL
   return { teamSize, ...TACTICAL_PRESETS[preset] }
 }
 
-export const ECONOMY = { kill: 200, plant: 300, win: 3000, lossBase: 1900, lossStep: 500, lossMax: 2900 }
+/** `kill` is the reward when the weapon is unknown (grenades, the spike); guns pay their own `killReward`. */
+export const ECONOMY = { kill: 300, plant: 300, win: 3000, lossBase: 1900, lossStep: 500, lossMax: 2900 }
 
 export const SHOP: Record<ShopItem, { price: number; label: string; kind: 'weapon' | 'shield' | 'ability'; max?: number }> = {
-  shotgun: { price: 1850, label: 'Escopeta M870', kind: 'weapon' },
-  rifle: { price: 2900, label: 'Rifle M4', kind: 'weapon' },
+  ...(Object.fromEntries(GUN_IDS.map(id => [id, { price: GUNS[id].price, label: GUNS[id].name, kind: 'weapon' as const }])) as Record<GunId, { price: number; label: string; kind: 'weapon' }>),
   lightShield: { price: 400, label: 'Escudo leve (25)', kind: 'shield' },
   heavyShield: { price: 1000, label: 'Escudo pesado (50)', kind: 'shield' },
   smoke: { price: 200, label: 'Fumaça', kind: 'ability', max: 2 },
   grenade: { price: 300, label: 'Granada', kind: 'ability', max: 1 },
 }
 
-export type Loadout = { weapon: LoadoutWeapon; shield: 0 | 25 | 50; smokes: number; grenades: number }
-export const BASE_LOADOUT: Loadout = { weapon: 'pistol', shield: 0, smokes: 0, grenades: 0 }
+/** A primary gun (rifle, SMG, shotgun, sniper) if bought, always a pistol, shield and abilities. */
+export type Loadout = { primary: PrimaryId | null; sidearm: PistolId; shield: 0 | 25 | 50; smokes: number; grenades: number }
+export const BASE_LOADOUT: Loadout = { primary: null, sidearm: DEFAULT_PISTOL, shield: 0, smokes: 0, grenades: 0 }
+/** The gun drawn at round start: the primary if there is one. */
+export const mainGun = (l: Loadout): GunId => l.primary ?? l.sidearm
+/** True when the loadout carries this gun. */
+export const ownsGun = (l: Loadout, gun: GunId): boolean => l.primary === gun || l.sidearm === gun
 
 export type TacticalPlayer = {
   id: number
@@ -218,15 +225,19 @@ export function tickTactical(state: TacticalState, dt: number): { state: Tactica
   }
 }
 
-/** A player died (killer -1 for world/self). Pays the kill reward and checks for elimination. */
-export function registerKill(state: TacticalState, killer: number, victim: number): { state: TacticalState; events: TacticalEvent[] } {
+/**
+ * A player died (killer -1 for world/self). Pays the kill reward (by weapon, like the real thing:
+ * SMGs and shotguns pay more, the big sniper less) and checks for elimination.
+ */
+export function registerKill(state: TacticalState, killer: number, victim: number, weapon?: GunId | 'grenade'): { state: TacticalState; events: TacticalEvent[] } {
   if (state.phase !== 'combat' && state.phase !== 'planted' && state.phase !== 'buy') return { state, events: [] }
   const v = state.players.find(p => p.id === victim)
   if (!v || !v.alive) return { state, events: [] }
   const k = state.players.find(p => p.id === killer)
   const players = state.players.map(p => {
     if (p.id === victim) return { ...p, alive: false, deaths: p.deaths + 1 }
-    if (k && p.id === killer && k.team !== v.team) return { ...p, kills: p.kills + 1, credits: Math.min(state.cfg.maxCredits, p.credits + ECONOMY.kill) }
+    const reward = weapon && weapon !== 'grenade' ? GUNS[weapon].killReward : ECONOMY.kill
+    if (k && p.id === killer && k.team !== v.team) return { ...p, kills: p.kills + 1, credits: Math.min(state.cfg.maxCredits, p.credits + reward) }
     return p
   })
   const spike = state.spike.carrier === victim ? { ...state.spike, carrier: null } : state.spike
@@ -271,7 +282,7 @@ export function defuseSpike(state: TacticalState, by: number): { state: Tactical
 
 export type BuyResult = { ok: true; state: TacticalState } | { ok: false; reason: 'phase' | 'credits' | 'owned' | 'max' | 'dead' }
 
-/** Buy an item during the buy phase. Weapons replace the current one; shields never downgrade. */
+/** Buy an item during the buy phase. A gun replaces the one in its slot; shields never downgrade. */
 export function buy(state: TacticalState, id: number, item: ShopItem): BuyResult {
   if (state.phase !== 'buy') return { ok: false, reason: 'phase' }
   const p = state.players.find(q => q.id === id)
@@ -280,9 +291,11 @@ export function buy(state: TacticalState, id: number, item: ShopItem): BuyResult
   if (p.credits < def.price) return { ok: false, reason: 'credits' }
   const l = p.loadout
   const next: Loadout = { ...l }
-  if (item === 'rifle' || item === 'shotgun') {
-    if (l.weapon === item) return { ok: false, reason: 'owned' }
-    next.weapon = item
+  if (item in GUNS) {
+    const gun = item as GunId
+    if (ownsGun(l, gun)) return { ok: false, reason: 'owned' }
+    if (isPistol(gun)) next.sidearm = gun
+    else next.primary = gun as PrimaryId
   } else if (item === 'lightShield' || item === 'heavyShield') {
     const amount = item === 'lightShield' ? 25 : 50
     if (l.shield >= amount) return { ok: false, reason: 'owned' }
@@ -332,15 +345,21 @@ export function botBuyPlan(p: TacticalPlayer, teamCredits: number, round: number
     }
   }
   const teamRich = teamCredits >= 3900 * 2
-  if (p.loadout.weapon === 'rifle') {
+  const pick = <T>(list: T[]) => list[(p.id + round) % list.length]
+  const strong: GunId[] = ['ak47', 'sg553', 'awp', 'galil', 'ssg08', 'p90']
+  if (p.loadout.primary && strong.includes(p.loadout.primary)) {
     if (p.loadout.shield < 50) take('heavyShield')
-  } else if (c >= 3900 || (teamRich && c >= 2900)) {
-    take('rifle')
+  } else if (c >= 5750 && p.id % 5 === 0) {
+    take('awp')
+    take('heavyShield')
+  } else if (c >= 3700 || (teamRich && c >= 2700)) {
+    take(pick<GunId>(['ak47', 'ak47', 'sg553', 'galil']))
     take('heavyShield')
   } else if (round === 1 || c < 2000) {
-    if (c >= 400 && round === 1) take('lightShield')
+    if (round === 1) take(p.id % 2 === 0 ? 'lightShield' : pick<GunId>(['p250', 'tec9', 'dualies']))
+    else if (c >= 1100) take(pick<GunId>(['deagle', 'p250']))
   } else {
-    take('shotgun')
+    take(pick<GunId>(['mp7', 'mac10', 'nova', 'galil']))
     take('lightShield')
   }
   if (p.loadout.smokes === 0) take('smoke')

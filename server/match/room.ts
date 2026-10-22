@@ -10,9 +10,10 @@
  * 3v2 rooms play out; host-driven bots are the next step (see docs/ONLINE.md).
  */
 import {
-  attackingTeam, buy, createTactical, defuseSpike, plantSpike, registerKill, setCarrier, setShield, tacticalConfig, tickTactical, useAbility,
+  attackingTeam, buy, createTactical, defuseSpike, mainGun, ownsGun, plantSpike, registerKill, setCarrier, setShield, tacticalConfig, tickTactical, useAbility,
   type LoadoutWeapon, type TacticalEvent, type TacticalState, type TeamIndex, type TeamSize,
 } from '../../src/game/tactical.ts'
+import { applyHit, GUN_IDS, GUNS } from '../../src/game/gunSpecs.ts'
 import {
   canStart, createLobby, fillWithBots, joinLobby, leaveLobby, lobbyView, setFillBots, setMap, setReady, switchTeam, type Lobby,
 } from '../../src/net/lobby.ts'
@@ -20,12 +21,18 @@ import { NET_RATE, type ClientMessage, type ErrorCode, type OnlineMapId, type Pl
 
 export type Conn = { id: string; name: string; send(msg: ServerMessage): void }
 
-/** Per-weapon limits for hit validation (tactical tuning, see src/game/config.ts). */
-export const WEAPON_LIMITS: Record<LoadoutWeapon, { interval: number; maxDamage: number; range: number }> = {
-  pistol: { interval: 0.13, maxDamage: 78, range: 120 },
-  rifle: { interval: 0.09, maxDamage: 160, range: 220 },
-  shotgun: { interval: 0.26, maxDamage: 270, range: 60 },
-}
+/**
+ * Per-weapon limits for hit validation, from the arsenal (src/game/gunSpecs.ts): one claim per
+ * trigger pull (shotgun pellets are merged by the client), never more than the gun can deal.
+ */
+export const WEAPON_LIMITS = Object.fromEntries(
+  GUN_IDS.map(id => {
+    const g = GUNS[id]
+    return [id, { interval: g.interval * 0.9, maxDamage: g.damage * g.headMul * g.pellets, range: g.range, pen: g.armorPen }]
+  }),
+) as Record<LoadoutWeapon, { interval: number; maxDamage: number; range: number; pen: number }>
+/** Frag grenades: share of damage that gets past a shield. */
+const GRENADE_PEN = 0.5
 const MAX_SPEED = 9.5
 const POS_TOLERANCE = 6
 /** Frag grenade: blast radius and peak damage (matches the client explosion). */
@@ -40,11 +47,15 @@ const dist3 = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - 
 const distXZ = (a: Vec3, b: Vec3) => Math.hypot(a[0] - b[0], a[2] - b[2])
 
 /**
- * `fireBudget`: seconds of trigger time banked (capped at FIRE_BURST). Each accepted hit spends its
- * weapon's fire interval, so two shots that reach the server inside one tick still both count.
+ * `fireBudget`: seconds of trigger time banked (capped at FIRE_BANK; when a hit is claimed, at the
+ * gun's interval + FIRE_BURST). Each accepted hit spends the gun's interval, so two shots that reach
+ * the server inside one tick still both count but nobody can save up a burst.
  */
 type Live = { frame: PlayerFrame | null; frameAt: number; hp: number; shield: number; fireBudget: number }
+/** Slack on top of a gun's own interval: two shots landing in one tick still both count. */
 const FIRE_BURST = 0.2
+/** Banked trigger time never exceeds this (the slowest bolt action plus slack). */
+const FIRE_BANK = 2
 
 export class Room {
   readonly code: string
@@ -174,7 +185,7 @@ export class Room {
     this.lobby.members.forEach((m, i) => {
       this.toRules.set(m.id, i)
       this.toNet.set(i, m.id)
-      this.live.set(m.id, { frame: null, frameAt: 0, hp: 100, shield: 0, fireBudget: FIRE_BURST })
+      this.live.set(m.id, { frame: null, frameAt: 0, hp: 100, shield: 0, fireBudget: FIRE_BANK })
     })
     this.state = createTactical(tacticalConfig(this.lobby.teamSize), this.lobby.members.map((m, i) => ({ id: i, name: m.name, team: m.team })))
     this.broadcastLobby()
@@ -211,9 +222,11 @@ export class Room {
     const sp = st.players[sr]
     const tp = st.players[tr]
     if (!sp.alive || !tp.alive || sp.team === tp.team) return
-    if (weapon !== 'pistol' && sp.loadout.weapon !== weapon) return
+    if (!ownsGun(sp.loadout, weapon)) return
     const lim = WEAPON_LIMITS[weapon]
     const sl = this.live.get(shooter)!
+    // Only the last `interval + slack` seconds count for this gun (no saving up rifle bursts).
+    sl.fireBudget = Math.min(sl.fireBudget, lim.interval + FIRE_BURST)
     if (sl.fireBudget < lim.interval - 1e-6) return
     if (distance > lim.range) return
     const sf = sl.frame
@@ -233,25 +246,25 @@ export class Room {
     const tr = this.toRules.get(target)
     const tl = this.live.get(target)
     if (!st || sr === undefined || tr === undefined || !tl || !st.players[tr].alive || amount <= 0) return
-    const soaked = Math.min(tl.shield, amount)
-    tl.shield -= soaked
-    tl.hp = Math.max(0, tl.hp - (amount - soaked))
+    const after = applyHit(tl.hp, tl.shield, amount, weapon === 'grenade' ? GRENADE_PEN : WEAPON_LIMITS[weapon].pen)
+    tl.hp = after.hp
+    tl.shield = after.shield
     this.state = setShield(st, tr, tl.shield)
     this.broadcast({ t: 'damage', target, by: shooter, amount, hp: tl.hp, shield: tl.shield, headshot })
     if (tl.hp <= 0) {
       this.broadcast({ t: 'kill', killer: shooter, victim: target, weapon, headshot })
-      this.kill(sr === tr ? -1 : sr, tr)
+      this.kill(sr === tr ? -1 : sr, tr, weapon)
     }
   }
 
   /** A player is out: drops the spike where they stood, then scores the kill. */
-  private kill(killer: number, victim: number): void {
+  private kill(killer: number, victim: number, weapon?: LoadoutWeapon | 'grenade'): void {
     if (!this.state) return
     if (this.state.spike.carrier === victim) {
       const f = this.live.get(this.toNet.get(victim)!)?.frame
       if (f) this.spikePos = [...f.pos]
     }
-    this.apply(registerKill(this.state, killer, victim))
+    this.apply(registerKill(this.state, killer, victim, weapon))
   }
 
   /** Smoke or frag thrown by a player who owns one; frags deal splash damage here (authoritative). */
@@ -291,7 +304,7 @@ export class Room {
       l.hp = 100
       l.shield = p.loadout.shield
       l.frame = null
-      l.fireBudget = FIRE_BURST
+      l.fireBudget = FIRE_BANK
     }
   }
 
@@ -299,7 +312,7 @@ export class Room {
   tick(dt: number): void {
     this.time += dt
     if (!this.state) return
-    for (const l of this.live.values()) l.fireBudget = Math.min(FIRE_BURST, l.fireBudget + dt)
+    for (const l of this.live.values()) l.fireBudget = Math.min(FIRE_BANK, l.fireBudget + dt)
     this.apply(tickTactical(this.state, dt))
     this.pickUpSpike()
     this.snapT -= dt
@@ -365,7 +378,7 @@ export class Room {
       score: st.score,
       attackers: attackingTeam(st),
       spike: { carrier: id(st.spike.carrier), planted: st.spike.planted, site: st.spike.site },
-      players: st.players.map(p => ({ id: this.toNet.get(p.id)!, team: p.team as TeamIndex, alive: p.alive, credits: p.credits, kills: p.kills, deaths: p.deaths, weapon: p.loadout.weapon, shield: p.loadout.shield })),
+      players: st.players.map(p => ({ id: this.toNet.get(p.id)!, team: p.team as TeamIndex, alive: p.alive, credits: p.credits, kills: p.kills, deaths: p.deaths, weapon: mainGun(p.loadout), shield: p.loadout.shield })),
     }
   }
 

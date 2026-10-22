@@ -4,7 +4,10 @@
  * DEFAULT_CONFIG holds the shipped source defaults. CONFIG is the active configuration read by
  * gameplay; the preview Tweak manager (tuning.ts) writes to it at the proper boundaries.
  */
-export type WeaponId = 'rifle' | 'shotgun' | 'rocket' | 'pistol'
+import { GUN_IDS, GUNS, type GunId, type GunSpec } from './gunSpecs'
+
+/** Arcade weapons (Deathmatch / Survival) plus the tactical arsenal (gunSpecs.ts). */
+export type WeaponId = 'rifle' | 'shotgun' | 'rocket' | 'pistol' | GunId
 
 export type WeaponDef = {
   id: WeaponId
@@ -38,10 +41,24 @@ export type WeaponDef = {
   adsFov: number
   projectileSpeed?: number
   splashRadius?: number
+  /** Tactical guns: the full spec (accuracy model, recoil pattern, sights, armour penetration…). */
+  gun?: GunSpec
+}
+
+const ADS_FOV: Record<GunSpec['cls'], number> = { pistol: 70, smg: 62, shotgun: 64, rifle: 56, sniper: 56 }
+/** WeaponDef view of a tactical gun (the Arsenal reads `gun` for the realistic model). */
+function gunDef(g: GunSpec): WeaponDef {
+  const punch = g.cls === 'sniper' ? 2.6 : g.cls === 'shotgun' ? 2.2 : g.id === 'deagle' ? 1.6 : g.cls === 'rifle' ? 1.05 : g.cls === 'smg' ? 0.75 : 0.7
+  return {
+    id: g.id, name: g.name, slot: g.cls === 'pistol' ? 2 : 1, damage: g.damage, headMultiplier: g.headMul, pellets: g.pellets, interval: g.interval, auto: g.auto,
+    mag: g.mag, reserveStart: g.reserve, reserveMax: g.reserve, reload: g.reload, perShell: !!g.perShell,
+    spread: g.spread.stand, spreadAds: g.spread.stand * 0.6, bloom: g.spread.bloom, bloomMax: g.spread.bloomMax, recoilPitch: g.recoil.pitch, recoilYaw: g.recoil.yaw,
+    punch, shake: punch * 0.06, range: g.range, adsFov: ADS_FOV[g.cls], gun: g,
+  }
 }
 
 /** Arcade tuning (Deathmatch / Onslaught): fast TTK swings, regenerating armor. */
-const ARCADE_WEAPONS: Record<WeaponId, WeaponDef> = {
+const ARCADE_WEAPONS: Record<'rifle' | 'shotgun' | 'rocket' | 'pistol', WeaponDef> = {
   rifle: {
     id: 'rifle', name: 'Rifle M4', slot: 1, damage: 21, headMultiplier: 2, pellets: 1, interval: 0.092, auto: true,
     mag: 30, reserveStart: 150, reserveMax: 270, reload: 1.85, perShell: false,
@@ -73,7 +90,7 @@ const ARCADE_WEAPONS: Record<WeaponId, WeaponDef> = {
  * headshots with the rifle, small magazines and slow reloads, so positioning and crosshair
  * placement matter more than spraying.
  */
-const TACTICAL_WEAPONS: Record<WeaponId, Partial<WeaponDef>> = {
+const TACTICAL_WEAPONS: Partial<Record<WeaponId, Partial<WeaponDef>>> = {
   rifle: { name: 'Rifle M4', slot: 1, damage: 40, headMultiplier: 4, interval: 0.103, mag: 25, reserveStart: 50, reserveMax: 50, reload: 2.4, spread: 0.0035, spreadAds: 0.0015, bloom: 0.0045, bloomMax: 0.045, recoilPitch: 0.011 },
   shotgun: { name: 'Escopeta M870', slot: 1, damage: 15, headMultiplier: 1.5, pellets: 12, interval: 0.29, mag: 7, reserveStart: 21, reserveMax: 21 },
   rocket: {},
@@ -82,9 +99,12 @@ const TACTICAL_WEAPONS: Record<WeaponId, Partial<WeaponDef>> = {
 
 export type WeaponProfile = 'arcade' | 'tactical'
 /** Active weapon stats; `setWeaponProfile` swaps them when a match starts. */
-export const WEAPONS: Readonly<Record<WeaponId, Readonly<WeaponDef>>> = structuredClone(ARCADE_WEAPONS)
+export const WEAPONS: Readonly<Record<WeaponId, Readonly<WeaponDef>>> = {
+  ...structuredClone(ARCADE_WEAPONS),
+  ...(Object.fromEntries(GUN_IDS.map(id => [id, gunDef(GUNS[id])])) as Record<GunId, WeaponDef>),
+}
 export function setWeaponProfile(profile: WeaponProfile): void {
-  for (const id of Object.keys(ARCADE_WEAPONS) as WeaponId[]) {
+  for (const id of Object.keys(ARCADE_WEAPONS) as (keyof typeof ARCADE_WEAPONS)[]) {
     Object.assign(WEAPONS[id] as WeaponDef, ARCADE_WEAPONS[id], profile === 'tactical' ? TACTICAL_WEAPONS[id] : {})
   }
 }

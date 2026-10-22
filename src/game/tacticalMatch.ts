@@ -6,10 +6,11 @@ import type { NetLink } from '../net/link'
 import type { ServerMessage, Vec3 } from '../net/protocol'
 import { diffEvents } from '../net/view'
 import {
-  aliveCount, attackingTeam, botBuyPlan, buy, createTactical, defuseSpike, plantSpike, registerKill, setCarrier, setShield, sideOf, SHOP,
+  aliveCount, attackingTeam, botBuyPlan, buy, createTactical, defuseSpike, mainGun, plantSpike, registerKill, setCarrier, setShield, sideOf, SHOP,
   startRound, tacticalConfig, tickTactical, useAbility, type BuyResult, type Loadout, type RoundEndReason, type ShopItem,
   type Side, type TacticalEvent, type TacticalPhase, type TacticalState, type TeamIndex, type TeamSize,
 } from './tactical'
+import { GUNS, type GunClass } from './gunSpecs'
 
 /**
  * Runtime director for the tactical mode: owns the rules state (tactical.ts), places both teams,
@@ -19,6 +20,11 @@ import {
  * Team 0 is always the player's team (allies drawn cyan), team 1 the enemy team (red).
  * Ids: player 0, allies 201–204, enemies 211–215.
  */
+/** Bot damage / fire-interval multipliers by the gun they bought (bots share one rifle model). */
+const BOT_GUN: Record<GunClass | 'deagle' | 'awp', [number, number]> = {
+  pistol: [2.2, 1.5], deagle: [3.4, 2], smg: [2.4, 0.7], shotgun: [2.6, 1.1], rifle: [3.2, 0.8], sniper: [4.5, 2.2], awp: [8, 3],
+}
+
 export const ALLY_NAMES = ['FAÍSCA', 'NÉVOA', 'TRAVA', 'BRISA']
 export const ENEMY_NAMES = ['CORVO', 'LÂMINA', 'PRISMA', 'ÔNIX', 'VULTO']
 export const ALLY_ID0 = 201
@@ -185,7 +191,7 @@ export class TacticalMatch {
     if (events.some(e => e.type === 'roundStart')) return
     const l = this.me.loadout
     const g = this.game
-    if (l.weapon !== before.weapon) g.arsenal.setLoadout(l.weapon === 'pistol' ? null : l.weapon, false)
+    if (l.primary !== before.primary || l.sidearm !== before.sidearm) g.arsenal.setLoadout(l.primary, false, l.sidearm)
     if (l.shield > before.shield && next.phase === 'buy') g.player.armor = l.shield
     if (l.grenades !== before.grenades) g.setGrenades(l.grenades)
   }
@@ -304,16 +310,10 @@ export class TacticalMatch {
     b.strafeMul = 0.3
     b.aimMul = 1.3
     // Tactical bots all carry a rifle model; the purchased weapon sets how hard and fast they hit.
-    if (l.weapon === 'rifle') {
-      b.dmgMul = 3.2
-      b.rateMul = 0.8
-    } else if (l.weapon === 'shotgun') {
-      b.dmgMul = 2.6
-      b.rateMul = 1.1
-    } else {
-      b.dmgMul = 2.2
-      b.rateMul = 1.5
-    }
+    const gun = GUNS[mainGun(l)]
+    const [dmg, rate] = BOT_GUN[gun.id === 'deagle' ? 'deagle' : gun.id === 'awp' ? 'awp' : gun.cls]
+    b.dmgMul = dmg
+    b.rateMul = rate
   }
 
   private applyPlayerLoadout(keepAmmo = false): void {
@@ -321,7 +321,7 @@ export class TacticalMatch {
     const me = this.me
     const l = me.loadout
     g.player.armor = l.shield
-    g.arsenal.setLoadout(l.weapon === 'pistol' ? null : l.weapon, keepAmmo)
+    g.arsenal.setLoadout(l.primary, keepAmmo, l.sidearm)
     g.setGrenades(l.grenades)
   }
 
@@ -342,7 +342,7 @@ export class TacticalMatch {
     }
     this.state = r.state
     const l = this.me.loadout
-    if (l.weapon !== before.weapon) this.game.arsenal.setLoadout(l.weapon === 'pistol' ? null : l.weapon, false)
+    if (l.primary !== before.primary || l.sidearm !== before.sidearm) this.game.arsenal.setLoadout(l.primary, false, l.sidearm)
     if (l.shield !== before.shield) this.game.player.armor = l.shield
     this.game.setGrenades(l.grenades)
     this.game.audio.play('pickup_ammo', { volume: 0.7 })

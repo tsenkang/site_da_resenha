@@ -4,6 +4,7 @@ import { HALF_X, HALF_Z, type MapRect, type Site } from '../game/arena'
 /** Size and world offset of the map shown on the minimap (rects are map-local, positions world). */
 export type MinimapFrame = { hx: number; hz: number; ox: number; oz: number }
 import { SHOP, type BuyResult, type Loadout, type ShopItem } from '../game/tactical'
+import { GUNS, isGunId, type GunId } from '../game/gunSpecs'
 import type { MinimapState, TacticalHud as HudData } from '../game/tacticalMatch'
 
 /**
@@ -26,14 +27,32 @@ const clock = (s: number) => {
 }
 const credits = (n: number) => `<i class="cr"></i>${n.toLocaleString('pt-BR')}`
 
+/** Buy menu columns, in the layout of a tactical shooter's buy menu. */
 const SHOP_GROUPS: { title: string; items: ShopItem[] }[] = [
-  { title: 'ARMAS', items: ['shotgun', 'rifle'] },
-  { title: 'ESCUDOS', items: ['lightShield', 'heavyShield'] },
-  { title: 'HABILIDADES', items: ['smoke', 'grenade'] },
+  { title: 'PISTOLAS', items: ['glock', 'dualies', 'p250', 'tec9', 'deagle'] },
+  { title: 'NÍVEL MÉDIO', items: ['nova', 'xm1014', 'mp7', 'p90', 'mac10'] },
+  { title: 'FUZIS', items: ['galil', 'ak47', 'ssg08', 'sg553', 'awp'] },
+  { title: 'EQUIPAMENTO', items: ['lightShield', 'heavyShield', 'smoke', 'grenade'] },
 ]
+const GUN_DESC: Record<GunId, string> = {
+  glock: 'Inicial · rajada rápida, pouco dano',
+  dualies: 'Duas pistolas · 30 balas',
+  p250: 'Fura escudo · boa de cabeça',
+  tec9: 'Automática de pistola · corre e atira',
+  deagle: 'Headshot mata · recuo enorme',
+  nova: 'Pump · 9 bagos, letal de perto',
+  xm1014: 'Semiauto · 7 cartuchos',
+  mp7: 'Precisa · recuo baixo',
+  p90: '50 balas · red dot',
+  mac10: 'Barata · cadência alta',
+  galil: 'Fuzil barato · 35 balas',
+  ak47: 'Headshot mata com escudo',
+  ssg08: 'Leve · precisa no pulo',
+  sg553: 'Luneta 2× · fura escudo',
+  awp: 'Mata com 1 tiro no corpo',
+}
 const SHOP_DESC: Record<ShopItem, string> = {
-  shotgun: 'Devastadora de perto · 12 projéteis',
-  rifle: 'Headshot de um tiro · automática',
+  ...GUN_DESC,
   lightShield: '+25 de escudo',
   heavyShield: '+50 de escudo',
   smoke: 'E · bloqueia a visão por 15 s',
@@ -222,7 +241,12 @@ export class TacticalHudView {
       const col = el('div', 'tb-group', `<h3>${g.title}</h3>`)
       for (const item of g.items) {
         const def = SHOP[item]
-        const card = el('button', 'tb-card', `<div class="tb-glyph">${GLYPH[item]}</div><div class="tb-name">${def.label}</div><div class="tb-desc">${SHOP_DESC[item]}</div><div class="tb-price">${credits(def.price)}</div><div class="tb-own"></div>`)
+        const gun = isGunId(item) ? GUNS[item] : null
+        const glyph = gun ? GLYPH[gun.cls === 'pistol' ? 'pistol' : gun.cls === 'shotgun' ? 'shotgun' : 'rifle'] : GLYPH[item]
+        const stats = gun
+          ? `<div class="tb-stats"><span>DANO <b>${gun.damage}${gun.pellets > 1 ? `×${gun.pellets}` : ''}</b></span><span>PENTE <b>${gun.mag}</b></span><span>${gun.auto ? 'AUTO' : gun.bolt ? 'FERROLHO' : 'SEMI'}</span>${gun.sight !== 'iron' ? `<span>${gun.sight === 'dot' ? 'RED DOT' : 'LUNETA'}</span>` : ''}</div>`
+          : ''
+        const card = el('button', `tb-card ${gun ? 'gun' : ''}`, `<div class="tb-glyph" data-icon="${item}">${glyph}</div><div class="tb-name">${def.label}</div><div class="tb-price">${credits(def.price)}</div><div class="tb-desc">${SHOP_DESC[item]}</div>${stats}<div class="tb-own"></div>`)
         card.addEventListener('click', () => this.tryBuy(item, card))
         card.addEventListener('mouseenter', () => this.audio.play('ui_hover', { volume: 0.3 }))
         this.cards.set(item, card)
@@ -233,6 +257,17 @@ export class TacticalHudView {
     n.querySelector('.tb-close')!.addEventListener('click', () => this.onClose())
     n.addEventListener('mousedown', e => e.stopPropagation())
     return n
+  }
+
+  private iconsSet = false
+  /** Swap the fallback glyphs for icons rendered from the gun models. */
+  setGunIcons(icons: Partial<Record<GunId, string>>): void {
+    if (this.iconsSet) return
+    this.iconsSet = true
+    this.buyEl.querySelectorAll<HTMLElement>('[data-icon]').forEach(e => {
+      const src = icons[e.dataset.icon as GunId]
+      if (src) e.innerHTML = `<img src="${src}" alt="">`
+    })
   }
 
   private tryBuy(item: ShopItem, card: HTMLElement): void {
@@ -253,7 +288,7 @@ export class TacticalHudView {
 
   private updateBuy(h: HudData): void {
     const l = h.loadout
-    const key = `${h.credits}|${l.weapon}|${l.shield}|${l.smokes}|${l.grenades}|${Math.ceil(h.timer)}|${h.allies.map(a => a.credits).join(',')}`
+    const key = `${h.credits}|${l.primary}|${l.sidearm}|${l.shield}|${l.smokes}|${l.grenades}|${Math.ceil(h.timer)}|${h.allies.map(a => a.credits).join(',')}`
     if (key === this.lastBuy) return
     this.lastBuy = key
     const q = (k: string) => this.buyEl.querySelector<HTMLElement>(`[data-b="${k}"]`)!
@@ -358,9 +393,6 @@ export class TacticalHudView {
 
 function owns(l: Loadout, item: ShopItem): boolean {
   switch (item) {
-    case 'rifle':
-    case 'shotgun':
-      return l.weapon === item
     case 'lightShield':
       return l.shield >= 25
     case 'heavyShield':
@@ -369,6 +401,8 @@ function owns(l: Loadout, item: ShopItem): boolean {
       return l.smokes >= (SHOP.smoke.max ?? 1)
     case 'grenade':
       return l.grenades >= (SHOP.grenade.max ?? 1)
+    default:
+      return l.primary === item || l.sidearm === item
   }
 }
 function count(l: Loadout, item: ShopItem): number {

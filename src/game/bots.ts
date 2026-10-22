@@ -263,7 +263,8 @@ export class Bot {
     if (this.wave && this.world.onslaught && info.attacker !== 0 && info.attacker >= 0) return { dealt: 0, killed: false, armor: false }
     const before = this.health + this.armor
     const hadArmor = this.armor > 0
-    const r = applyDamage(this.health, this.armor, amount, this.absorb)
+    // Armor-piercing guns push part of the hit through the shield.
+    const r = applyDamage(this.health, this.armor, amount, info.pen !== undefined ? Math.min(this.absorb, 1 - info.pen) : this.absorb)
     this.health = r.health
     this.armor = r.armor
     const dealt = before - (r.health + r.armor)

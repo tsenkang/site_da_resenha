@@ -67,6 +67,7 @@ async function boot(): Promise<void> {
   // Tactical shop: frees the cursor while open; closing re-captures it when the round is live.
   const openBuy = () => {
     if (!game?.tactical?.canBuy || ui.tac.buyOpen) return
+    ui.tac.setGunIcons(game.arsenal.gunIcons(game.renderer.gl))
     ui.tac.setBuyOpen(true)
     input.unlockPointer()
   }
@@ -249,6 +250,7 @@ async function boot(): Promise<void> {
   const parts = { code: 0, library: 0, stage: 0 }
   const progress = (label?: string) => ui.setBootProgress(0.04 + parts.code * 0.16 + parts.library * 0.5 + parts.stage * 0.3, label)
   progress('INITIALISING RIFT')
+  const QUALITY_REV = 2
   const [{ Game }, { Renderer, suggestQuality }, physics, { Assets }, { loadLibrary }, { StageLoader }, { ALLY_ID0, ENEMY_ID0 }] = await Promise.all([
     import('./game/game'),
     import('./engine/renderer'),
@@ -263,8 +265,13 @@ async function boot(): Promise<void> {
   await physics.initPhysics()
   parts.code = 1
   progress('BUILDING ARENA')
-  if (firstRun) {
-    save.update({ quality: suggestQuality() })
+  // Auto quality: on the first run, and once more when the detection got smarter (Chromebooks used
+  // to be forced to low; recent ones run medium with bloom and shadows).
+  if (firstRun || save.data.qualityRev < QUALITY_REV) {
+    const pick = suggestQuality()
+    const order = ['low', 'medium', 'high']
+    if (firstRun || (save.data.quality === 'low' && order.indexOf(pick) > 0)) save.update({ quality: pick })
+    save.update({ qualityRev: QUALITY_REV })
     ui.refreshSettings()
   }
   const renderer = new Renderer(canvas, save.data.quality)

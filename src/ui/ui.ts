@@ -314,6 +314,7 @@ export class Ui {
     const n = el('div', '', `
       <div class="od-frame"></div>
       <div class="lowhp"></div>
+      <div class="scope"><div class="sc-lens"></div><i class="sc-h"></i><i class="sc-v"></i><b class="sc-zoom"></b></div>
       <div class="xh-wrap">
         <svg class="od-ring" viewBox="0 0 100 100"><circle class="od-bg" cx="50" cy="50" r="44"/><circle class="od-fg" cx="50" cy="50" r="44"/></svg>
         <div class="od-lbl">OVERDRIVE</div>
@@ -369,7 +370,7 @@ export class Ui {
     // Health/armor glyphs are CSS shapes (no icon files needed).
     n.querySelectorAll<HTMLElement>('.v-ico').forEach(e => e.removeAttribute('style'))
     n.querySelectorAll<HTMLElement>('[data-k]').forEach(e => (this.E[e.dataset.k!] = e))
-    for (const c of ['xhair', 'hitmark', 'dmg-ring', 'reload', 'ammo-warn', 'feed', 'medal', 'msg', 'pickups', 'weapon', 'protect', 'lowhp', 'style', 'st-list', 'bossbar', 'banner', 'perks', 'pk-cards', 'od-ring', 'od-lbl', 'vitals', 'loadtag', 'wave-info', 'top-dm', 'st-rank', 'xh-wrap'])
+    for (const c of ['xhair', 'hitmark', 'dmg-ring', 'reload', 'ammo-warn', 'feed', 'medal', 'msg', 'pickups', 'weapon', 'protect', 'lowhp', 'style', 'st-list', 'bossbar', 'banner', 'perks', 'pk-cards', 'od-ring', 'od-lbl', 'vitals', 'loadtag', 'wave-info', 'top-dm', 'st-rank', 'xh-wrap', 'scope', 'sc-zoom'])
       this.E[c] = n.querySelector(`.${c}`)!
     this.countdownEl = n.querySelector('.countdown')!
     this.deathEl = n.querySelector('.death')!
@@ -513,7 +514,7 @@ export class Ui {
         s.classList.toggle('active', s.dataset.slot === h.weapon)
         s.classList.toggle('locked', !h.owned[s.dataset.slot as 'rifle'])
       })
-      E.wicon.innerHTML = h.weapon === 'pistol' ? `<span class="glyph">${GLYPH.pistol}</span>` : icon(h.weapon)
+      E.wicon.innerHTML = h.weaponIcon ? `<img class="gun-ico" src="${h.weaponIcon}" alt="">` : h.weapon === 'pistol' ? `<span class="glyph">${GLYPH.pistol}</span>` : icon(h.weapon)
       E.nades.innerHTML = h.grenadesUnlocked && !tac ? Array.from({ length: Math.max(h.grenades, 0) }, () => icon('grenade')).join('') + '<kbd>G</kbd>' : ''
       if (prevW && prevW !== h.weapon) {
         const [x, y] = this.center(E.wicon)
@@ -525,9 +526,19 @@ export class Ui {
     E.xhair.style.setProperty('--gap', `${gap.toFixed(1)}px`)
     // Rifle (red dot) and shotgun (ghost ring) aim through their real sights: no HUD reticle at ADS.
     // Rifle red dot / shotgun ring are real sights; the pistol keeps the HUD crosshair at ADS.
-    const sighted = h.weapon === 'rifle' || h.weapon === 'shotgun'
-    const adsHide = sighted ? Math.max(0, 1 - h.ads * 8) : Math.max(0, 1 - h.ads * 1.6)
+    // Tactical guns: iron sights and red dots are real sights (no HUD crosshair at ADS); scoped
+    // rifles have no crosshair at all unscoped (hip-fire is a guess) and draw the scope overlay.
+    const sighted = h.weapon === 'rifle' || h.weapon === 'shotgun' || h.sight === 'dot' || h.sight === 'iron'
+    const adsHide = h.sight === 'scope' ? 0 : sighted ? Math.max(0, 1 - h.ads * 8) : Math.max(0, 1 - h.ads * 1.6)
     E.xhair.style.opacity = String(h.alive ? adsHide * (h.sprinting ? 0.35 : 1) : 0)
+    const scoped = h.alive && h.scoped
+    if (E.scope.classList.contains('on') !== scoped) E.scope.classList.toggle('on', scoped)
+    if (scoped) {
+      const z = `${h.zoom}×`
+      if (E['sc-zoom'].textContent !== z) E['sc-zoom'].textContent = z
+      // The reticle blooms open while moving or right after a shot (the scope is only precise still).
+      E.scope.style.setProperty('--blur', `${Math.min(6, h.spread * 900).toFixed(1)}px`)
+    }
     E['od-ring'].style.opacity = ons && h.alive ? String(sighted ? adsHide : 0.35 + (1 - h.ads) * 0.65) : '0'
     E['od-lbl'].style.opacity = ons && h.alive && (h.overdrive >= 1 || h.overdriveActive > 0) ? '1' : '0'
     E.reload.style.opacity = h.reloading > 0 ? '1' : '0'

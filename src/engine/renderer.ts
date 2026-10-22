@@ -15,19 +15,21 @@ import type { Quality } from './save'
 type Preset = { pixelRatio: number; minPixelRatio: number; shadows: boolean; shadowMap: number; bloom: boolean; post: boolean; samples: number; particles: number }
 export const QUALITY_PRESETS: Record<Quality, Preset> = {
   low: { pixelRatio: 0.75, minPixelRatio: 0.5, shadows: false, shadowMap: 512, bloom: false, post: false, samples: 0, particles: 0.3 },
-  medium: { pixelRatio: 0.9, minPixelRatio: 0.6, shadows: true, shadowMap: 1024, bloom: false, post: true, samples: 2, particles: 0.55 },
+  medium: { pixelRatio: 0.9, minPixelRatio: 0.6, shadows: true, shadowMap: 1024, bloom: true, post: true, samples: 2, particles: 0.6 },
   high: { pixelRatio: 1, minPixelRatio: 0.75, shadows: true, shadowMap: 2048, bloom: true, post: true, samples: 4, particles: 0.8 },
 }
 
 /** GPU names that mean an integrated/mobile chip (Chromebooks, old laptops) or software rendering. */
-const WEAK_GPU = /intel\(r\) (hd|uhd) graphics (4|5|6)|intel.*(hd|uhd)|mali|adreno|powervr|swiftshader|llvmpipe|software|microsoft basic|apple gpu|videocore/i
+const WEAK_GPU = /intel\(r\) hd graphics|intel\(r\) uhd graphics 6\d\d|mali-[gt]5|mali-4|adreno|powervr|swiftshader|llvmpipe|software|microsoft basic|videocore/i
 
 export function suggestQuality(): Quality {
   const cores = navigator.hardwareConcurrency ?? 4
   const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8
   const gpu = gpuName()
-  if (cores <= 4 || memory <= 4 || WEAK_GPU.test(gpu) || /CrOS/.test(navigator.userAgent)) return 'low'
-  if (cores <= 8 || /intel/i.test(gpu)) return 'medium'
+  // Chromebooks and laptops with a recent integrated GPU (Iris Xe, UHD, Radeon Vega, Mali-G7x…) run
+  // medium fine: dynamic resolution keeps the frame rate if a scene gets heavy.
+  if (cores <= 2 || memory <= 2 || WEAK_GPU.test(gpu)) return 'low'
+  if (cores <= 8 || memory <= 8 || /intel|mali|CrOS/i.test(gpu + navigator.userAgent)) return 'medium'
   return 'high'
 }
 
@@ -289,7 +291,7 @@ export class Renderer {
     if (this.preset.bloom) {
       const css = this.gl.getSize(new THREE.Vector2())
       // Half resolution, high threshold: only lamps, lit windows, muzzle flashes and the sun glow.
-      this.bloom = new UnrealBloomPass(css.multiplyScalar(0.5), 0.32, 0.45, 0.93)
+      this.bloom = new UnrealBloomPass(css.multiplyScalar(0.5), this.preset.samples >= 4 ? 0.32 : 0.26, 0.45, 0.93)
       this.composer.addPass(this.bloom)
     }
     this.composer.addPass(new OutputPass())

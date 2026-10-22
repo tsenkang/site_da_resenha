@@ -103,7 +103,7 @@ describe('tactical rules', () => {
 
   it('buying checks phase, credits and duplicates; survivors keep gear', () => {
     let s = createTactical(tacticalConfig(2), roster(2))
-    expect(buy(s, 0, 'rifle')).toEqual({ ok: false, reason: 'credits' })
+    expect(buy(s, 0, 'ak47')).toEqual({ ok: false, reason: 'credits' })
     const light = buy(s, 0, 'lightShield')
     expect(light.ok).toBe(true)
     if (!light.ok) return
@@ -139,6 +139,6 @@ describe('tactical rules', () => {
     const poor = { ...s.players[0], credits: 800 }
     expect(botBuyPlan(poor, 1600, 2)).toEqual(['smoke'])
     const rich = { ...s.players[0], credits: 5000 }
-    expect(botBuyPlan(rich, 10000, 3)).toEqual(['rifle', 'heavyShield', 'smoke'])
+    expect(botBuyPlan(rich, 10000, 3)).toEqual(['galil', 'heavyShield', 'smoke'])
   })
 })

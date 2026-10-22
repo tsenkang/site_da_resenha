@@ -13,9 +13,10 @@
  * Every message is a plain object with a `t` tag. `parseClientMessage` turns untrusted input into
  * a typed message or null; nothing else on the server touches raw JSON.
  */
+import { GUN_IDS } from '../game/gunSpecs.ts'
 import type { LoadoutWeapon, ShopItem, SiteId, TacticalPhase, TacticalState, TeamIndex, TeamSize } from '../game/tactical.ts'
 
-export const PROTOCOL_VERSION = 1
+export const PROTOCOL_VERSION = 2
 /** Client → server state frames and server snapshots per second. */
 export const NET_RATE = 20
 export const MAX_NAME = 16
@@ -97,8 +98,8 @@ export type ServerMessage =
 export type ErrorCode = 'version' | 'bad_message' | 'no_room' | 'room_full' | 'not_host' | 'not_ready' | 'in_match' | 'rate' | 'closed'
 
 // ─── validation (untrusted input) ───────────────────────────────────────
-const WEAPONS: readonly LoadoutWeapon[] = ['pistol', 'shotgun', 'rifle']
-const ITEMS: readonly ShopItem[] = ['shotgun', 'rifle', 'lightShield', 'heavyShield', 'smoke', 'grenade']
+const WEAPONS: readonly LoadoutWeapon[] = GUN_IDS
+const ITEMS: readonly ShopItem[] = [...GUN_IDS, 'lightShield', 'heavyShield', 'smoke', 'grenade']
 const isNum = (v: unknown, min = -1e6, max = 1e6): v is number => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
 const isVec = (v: unknown): v is Vec3 => Array.isArray(v) && v.length === 3 && v.every(x => isNum(x, -1000, 1000))
 const isTeam = (v: unknown): v is TeamIndex => v === 0 || v === 1

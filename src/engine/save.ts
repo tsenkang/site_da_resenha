@@ -18,6 +18,8 @@ export type SaveData = {
   sensitivity: number
   invertY: boolean
   quality: Quality
+  /** Revision of the automatic quality pick (re-runs once when the detection improves). */
+  qualityRev: number
   reducedMotion: boolean
   tutorialDone: boolean
   playerName: string
@@ -42,6 +44,7 @@ export function defaultSave(): SaveData {
     sensitivity: 1,
     invertY: false,
     quality: 'high',
+    qualityRev: 0,
     reducedMotion: false,
     tutorialDone: false,
     playerName: 'PLAYER',
@@ -77,6 +80,7 @@ export function parseSave(raw: string | null): SaveData {
     sensitivity: typeof data.sensitivity === 'number' && data.sensitivity >= 0.2 && data.sensitivity <= 3 ? data.sensitivity : base.sensitivity,
     invertY: data.invertY === true,
     quality: data.quality === 'low' || data.quality === 'medium' || data.quality === 'high' ? data.quality : base.quality,
+    qualityRev: typeof data.qualityRev === 'number' && Number.isFinite(data.qualityRev) ? data.qualityRev : 0,
     reducedMotion: data.reducedMotion === true,
     tutorialDone: data.tutorialDone === true,
     playerName: typeof data.playerName === 'string' && data.playerName.trim() ? data.playerName.trim().slice(0, 16) : base.playerName,

@@ -25,6 +25,7 @@ import { tuning } from './tuning'
 import { Arsenal, type HitKind } from './weapons'
 import { TacticalMatch, type MinimapState, type TacticalHud } from './tacticalMatch'
 import type { LoadoutWeapon, TeamIndex, TeamSize } from './tactical'
+import { GUN_IDS, GUNS, isGunId, type GunSpec } from './gunSpecs'
 import type { NetLink } from '../net/link'
 
 export type Mode = 'attract' | 'countdown' | 'playing' | 'paused' | 'ended'
@@ -68,10 +69,18 @@ export type HudState = {
   armorWait: number
   weapon: WeaponId
   weaponName: string
+  /** Silhouette icon of a tactical gun (data URL). */
+  weaponIcon?: string
   mag: number
   magSize: number
   reserve: number
-  owned: Record<WeaponId, boolean>
+  owned: Partial<Record<WeaponId, boolean>>
+  /** Sight of the gun in hand (tactical guns): iron sights, red dot or scope. */
+  sight?: GunSpec['sight']
+  /** Looking through a scope (the HUD draws the scope overlay). */
+  scoped: boolean
+  /** Scope magnification (1 when not scoped). */
+  zoom: number
   spread: number
   ads: number
   reloading: number
@@ -119,6 +128,7 @@ type WavePhase = 'none' | 'loading' | 'intro' | 'fight' | 'clear' | 'perk' | 'ne
 const SOURCE_LABEL: Record<DamageSource, string> = {
   rifle: 'M4', shotgun: 'M870', rocket: 'RPG-X', pistol: 'P9', spike: 'SPIKE', pulse: 'PULSE', scatter: 'SCATTER', barrel: 'BARREL', fall: 'FALL',
   grenade: 'FRAG', plasma: 'PLASMA', cannon: 'CANNON', minigun: 'MINIGUN', slam: 'SLAM', kamikaze: 'KAMIKAZE',
+  ...(Object.fromEntries(GUN_IDS.map(id => [id, GUNS[id].name.toUpperCase()])) as Record<(typeof GUN_IDS)[number], string>),
 }
 const SHARD_COLOR: Record<ShardKind, [number, number, number]> = { health: [0.4, 3.2, 0.9], armor: [0.5, 1.8, 4], ammo: [4, 2.6, 0.5] }
 const PROJ = {
@@ -457,7 +467,7 @@ export class Game implements CombatWorld {
   /** Weapon in hand as the rules know it (the launcher never appears in tactical). */
   heldLoadoutWeapon(): LoadoutWeapon {
     const c = this.arsenal.current
-    return c === 'rifle' || c === 'shotgun' ? c : 'pistol'
+    return isGunId(c) ? c : 'glock'
   }
 
   takeNetShots(): number {
@@ -1583,7 +1593,7 @@ export class Game implements CombatWorld {
     if (this.mode !== 'attract') {
       // Tactical movement: no sprint or slide; Shift walks quietly at half speed.
       const tac = !!this.tactical
-      if (tac) this.player.speedScale = controllable && input.held('sprint') ? 0.55 : 1
+      if (tac) this.player.speedScale = (controllable && input.held('sprint') ? 0.55 : 1) * this.arsenal.speedScale
       const intent = {
         x: controllable ? input.move.x : 0,
         y: controllable ? input.move.y : 0,
@@ -1617,11 +1627,16 @@ export class Game implements CombatWorld {
       const perk = this.wavePhase === 'perk'
       if (!perk && this.tactical) {
         // 1 = primary (if bought), 2 = pistol.
+        const owned = (Object.keys(this.arsenal.slots) as WeaponId[]).filter(id => this.arsenal.slots[id].owned)
+        const sidearm = (id: WeaponId) => id === 'pistol' || WEAPONS[id].gun?.cls === 'pistol'
         if (input.consume('slot1')) {
-          const primary = (['rifle', 'shotgun'] as WeaponId[]).find(id => this.arsenal.slots[id].owned)
+          const primary = owned.find(id => !sidearm(id) && id !== 'rocket')
           if (primary) this.arsenal.select(primary)
         }
-        if (input.consume('slot2')) this.arsenal.select('pistol')
+        if (input.consume('slot2')) {
+          const side = owned.find(sidearm)
+          if (side) this.arsenal.select(side)
+        }
         input.consume('slot3')
         if (input.consume('smoke')) this.tactical.throwSmoke()
       } else if (!perk) {
@@ -1637,7 +1652,7 @@ export class Game implements CombatWorld {
       const eye = this.player.eye(1, tmp).clone()
       // Holding F to plant/defuse puts the gun away.
       const channel = !!this.tactical && input.held('interact')
-      this.arsenal.step(dt, { fire: !channel && input.held('fire'), firePressed: input.consume('fire') && !channel, ads: input.held('ads'), reload: input.consume('reload') }, eye, this.player.sprinting)
+      this.arsenal.step(dt, { fire: !channel && input.held('fire'), firePressed: input.consume('fire') && !channel, ads: input.held('ads'), adsPressed: input.consume('ads'), reload: input.consume('reload') }, eye, this.player.sprinting)
       if (this.arsenal.shotsThisStep) {
         this.shots += this.arsenal.shotsThisStep
         this.hits += this.arsenal.hitsThisStep
@@ -2056,7 +2071,7 @@ export class Game implements CombatWorld {
     this.lastFrameDt = Math.max(0, Math.min(0.1, frameDt))
     const look = this.mode === 'playing' || this.mode === 'countdown' ? this.input.takeLook() : (this.input.takeLook(), { x: 0, y: 0 })
     if (this.player.alive && (this.mode === 'playing' || this.mode === 'countdown')) {
-      const adsK = 1 - this.arsenal.ads * 0.35
+      const adsK = this.arsenal.lookScale
       this.player.yaw -= look.x * adsK
       this.player.pitch = THREE.MathUtils.clamp(this.player.pitch - look.y * adsK, -1.5, 1.5)
     }
@@ -2099,7 +2114,9 @@ export class Game implements CombatWorld {
       this.strafeTilt += (-strafe * 0.018 - this.strafeTilt) * Math.min(1, frameDt * 8)
       this.slideTilt += ((this.player.sliding > 0 ? 0.075 : 0) - this.slideTilt) * Math.min(1, frameDt * 10)
       const P = this.arsenal.punch
-      cam.rotation.set(this.player.pitch + P.pitch + shake.y, this.player.yaw + P.yaw + shake.x, this.strafeTilt + this.slideTilt + P.roll + shake.r, 'YXZ')
+      // Spray recoil: the view climbs half as much as the bullets (aim below where it lands).
+      const R = this.arsenal.recoil
+      cam.rotation.set(this.player.pitch + P.pitch + R.pitch * 0.5 + shake.y, this.player.yaw + P.yaw + R.yaw * 0.5 + shake.x, this.strafeTilt + this.slideTilt + P.roll + shake.r, 'YXZ')
       const moveK = this.player.sliding > 0 ? 1.1 : this.player.sprinting ? 1.06 : 1
       this.fov(this.fovSetting, this.arsenal.fovScale() * moveK * (this.overdriveT > 0 ? 1.04 : 1))
       this.arsenal.animate(dt, this.lastLook, this.reducedMotion)
@@ -2236,10 +2253,14 @@ export class Game implements CombatWorld {
       armorWait: Math.min(1, this.player.sinceHit / CONFIG.player.armorRegenDelay),
       weapon: a.current,
       weaponName: a.def.name,
+      weaponIcon: a.gun ? a.gunIcons(this.renderer.gl)[a.gun.id] : undefined,
       mag: s.mag,
       magSize: a.def.mag,
       reserve: s.reserve,
-      owned: { rifle: a.slots.rifle.owned, shotgun: a.slots.shotgun.owned, rocket: a.slots.rocket.owned, pistol: a.slots.pistol.owned },
+      owned: Object.fromEntries((Object.keys(a.slots) as WeaponId[]).map(id => [id, a.slots[id].owned])),
+      sight: a.gun?.sight,
+      scoped: a.scoped,
+      zoom: a.zoom,
       spread: a.spread,
       ads: a.ads,
       reloading: a.reloading > 0 ? 1 - a.reloading / a.reloadTotal : 0,

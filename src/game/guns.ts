@@ -31,6 +31,10 @@ export type ViewModel = {
   hip?: THREE.Vector3
   /** Optional ADS pose: x = lateral offset, y = height (default −sightY), z = distance in front of the eye. */
   ads?: { x: number; y?: number; z: number }
+  /** Second gun of a dual-wield pair (muzzle/flash/ejection port fire alternately). */
+  alt?: { muzzle: THREE.Object3D; flash: THREE.Group; eject?: THREE.Object3D; slide?: THREE.Object3D }
+  /** Pistol slide (racks back on each shot). */
+  slide?: THREE.Object3D
 }
 
 const loader = { noise: undefined as THREE.Texture | undefined }
@@ -74,7 +78,7 @@ export function weaponMats(): Mats {
   return mats
 }
 
-class Builder {
+export class Builder {
   private parts = new Map<THREE.Material, THREE.BufferGeometry[]>()
   add(mat: THREE.Material, geo: THREE.BufferGeometry, pos: [number, number, number], rot: [number, number, number] = [0, 0, 0]): this {
     const g = geo.index ? geo.toNonIndexed() : geo.clone()
@@ -178,7 +182,7 @@ export function reticleTexture(): THREE.Texture {
   return t
 }
 
-function picatinny(b: Builder, mat: THREE.Material, y: number, z0: number, z1: number, w = 0.022): void {
+export function picatinny(b: Builder, mat: THREE.Material, y: number, z0: number, z1: number, w = 0.022): void {
   const len = Math.abs(z1 - z0)
   b.box(mat, w, 0.008, len, [0, y, (z0 + z1) / 2], undefined, 0.002)
   for (let z = Math.min(z0, z1) + 0.005; z < Math.max(z0, z1) - 0.003; z += 0.01) b.box(mat, w + 0.004, 0.006, 0.005, [0, y + 0.006, z], undefined, 0)
@@ -393,7 +397,7 @@ export function buildRocket(flashTex: THREE.Texture, flameTex: THREE.Texture): V
 }
 
 /** Gloved hands wrapped around grip points with sleeves running off-screen. */
-function addArms(root: THREE.Group, at: { right: [number, number, number]; left: [number, number, number] }): void {
+export function addArms(root: THREE.Group, at: { right: [number, number, number]; left: [number, number, number] }): void {
   const M = weaponMats()
   const b = new Builder()
   const limb = (from: THREE.Vector3, to: THREE.Vector3, r0: number, r1: number, mat: THREE.Material) => {
