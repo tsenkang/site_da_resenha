@@ -2114,9 +2114,9 @@ export class Game implements CombatWorld {
       this.strafeTilt += (-strafe * 0.018 - this.strafeTilt) * Math.min(1, frameDt * 8)
       this.slideTilt += ((this.player.sliding > 0 ? 0.075 : 0) - this.slideTilt) * Math.min(1, frameDt * 10)
       const P = this.arsenal.punch
-      // Spray recoil: the view climbs half as much as the bullets (aim below where it lands).
+      // Spray recoil moves the view with the bullets: the crosshair always shows where they go.
       const R = this.arsenal.recoil
-      cam.rotation.set(this.player.pitch + P.pitch + R.pitch * 0.5 + shake.y, this.player.yaw + P.yaw + R.yaw * 0.5 + shake.x, this.strafeTilt + this.slideTilt + P.roll + shake.r, 'YXZ')
+      cam.rotation.set(this.player.pitch + P.pitch + R.pitch + shake.y, this.player.yaw + P.yaw + R.yaw + shake.x, this.strafeTilt + this.slideTilt + P.roll + shake.r, 'YXZ')
       const moveK = this.player.sliding > 0 ? 1.1 : this.player.sprinting ? 1.06 : 1
       this.fov(this.fovSetting, this.arsenal.fovScale() * moveK * (this.overdriveT > 0 ? 1.04 : 1))
       this.arsenal.animate(dt, this.lastLook, this.reducedMotion)

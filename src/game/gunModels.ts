@@ -20,6 +20,8 @@ type V3 = [number, number, number]
 type Mats = ReturnType<typeof weaponMats>
 
 const POSE_LONG = { right: [0.75, 0.35, -0.6] as V3, left: [0.9, -0.55, 0.63] as V3 }
+/** Grip-hole centre of the left hand below the gun's underside (measured on the original rifle). */
+const LEFT_PALM_GAP = 0.006
 const POSE_PISTOL = { right: [0.62, 0.35, -0.6] as V3, left: [0.95, -0.5, 0.9] as V3 }
 
 // ─── extra materials ────────────────────────────────────────────────────
@@ -130,6 +132,8 @@ type Finish = {
   ads: { x: number; y?: number; z: number }
   /** Left hand (support grip). */
   left: V3
+  /** false: keep `left` as typed (the hand holds a vertical foregrip, not the handguard). */
+  leftFit?: boolean
   layout: 'long' | 'pistol'
   /** Red-dot lens: centre height and z. */
   dot?: { y: number; z: number; w: number }
@@ -137,8 +141,34 @@ type Finish = {
   noArms?: boolean
 }
 
+/**
+ * Underside of the gun at depth `z` (handguard, pump, receiver): the first surface hit by a ray
+ * cast straight up at x = 0, in root space. Used to seat the support hand on the gun.
+ */
+function undersideY(root: THREE.Object3D, z: number, below: number): number | null {
+  root.updateMatrixWorld(true)
+  const meshes: THREE.Object3D[] = []
+  root.traverse(o => {
+    const m = o as THREE.Mesh
+    if (m.isMesh && m.visible && !(m.material as THREE.Material).transparent) meshes.push(m)
+  })
+  const origin = new THREE.Vector3(0, -0.4, z).applyMatrix4(root.matrixWorld)
+  const dir = new THREE.Vector3(0, 1, 0).transformDirection(root.matrixWorld)
+  const ray = new THREE.Raycaster(origin, dir, 0, 0.4 + below)
+  const hits = ray.intersectObjects(meshes, false)
+  if (!hits.length) return null
+  return root.worldToLocal(hits[0].point.clone()).y
+}
+
 function finish(root: THREE.Group, A: VmAssets, flashTex: THREE.Texture, flameTex: THREE.Texture, f: Finish): ViewModel {
   for (const part of [f.mag, f.pump, f.bolt, f.slide]) if (part) root.add(part)
+  // Seat the support hand against the underside of the handguard / pump (palm touching, as on the
+  // original rifle) instead of trusting hand-typed heights that left it floating below the gun.
+  let left = f.left
+  if (f.layout === 'long' && f.leftFit !== false) {
+    const under = undersideY(root, f.left[2], f.sightY)
+    if (under !== null) left = [f.left[0], under - LEFT_PALM_GAP, f.left[2]]
+  }
   const muzzle = new THREE.Object3D()
   muzzle.position.set(...f.muzzle)
   root.add(muzzle)
@@ -168,7 +198,7 @@ function finish(root: THREE.Group, A: VmAssets, flashTex: THREE.Texture, flameTe
     // Arms are attached by the caller.
   } else if (A.armR && A.armL) {
     root.add(buildArm(A.armR, 'armR', { at: right, rot: pose.right } as ArmPose))
-    const leftArm = buildArm(A.armL, 'armL', { at: f.left, rot: pose.left } as ArmPose)
+    const leftArm = buildArm(A.armL, 'armL', { at: left, rot: pose.left } as ArmPose)
     ;(f.pump ?? root).add(leftArm)
     if (f.pump) leftArm.position.sub(f.pump.position)
   } else proceduralArms(root, { right: f.layout === 'long' ? [0, -0.09, 0.06] : [0, -0.05, 0.03], left: f.left })
@@ -356,7 +386,7 @@ function mp7(): { root: THREE.Group; f: Omit<Finish, 'layout'> } {
   mb.box(M.dark, 0.026, 0.03, 0.04, [0, 0, 0], [-0.25, 0, 0], 0.004)
   mb.build(mag)
   mag.position.set(0, -0.14, 0.075)
-  return { root, f: { muzzle: [0, 0.03, -0.29], eject: [0.026, 0.04, -0.04], mag, sightY: 0.085, sightZ: 0.02, hip: [0.14, -0.16, -0.34], ads: { x: 0, z: -0.24 }, left: [0, -0.06, -0.15], flash: 0.85 } }
+  return { root, f: { muzzle: [0, 0.03, -0.29], eject: [0.026, 0.04, -0.04], mag, sightY: 0.085, sightZ: 0.02, hip: [0.14, -0.16, -0.34], ads: { x: 0, z: -0.24 }, left: [0, -0.06, -0.15], leftFit: false, flash: 0.85 } }
 }
 
 function p90(): { root: THREE.Group; f: Omit<Finish, 'layout'> } {

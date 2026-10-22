@@ -215,12 +215,14 @@ export class Arsenal {
   private gunSpread(g: GunSpec): number {
     const P = this.player
     const sp = g.spread
-    const moveFrac = THREE.MathUtils.smoothstep(P.speed2d / (CONFIG.player.walkSpeed * g.speed), 0.3, 0.9)
+    // Walking (Shift) keeps nearly all accuracy; only running at full speed costs it.
+    const moveFrac = THREE.MathUtils.smoothstep(P.speed2d / (CONFIG.player.walkSpeed * g.speed), 0.45, 1) * 0.7
     let base: number
     if (g.sight === 'scope' && g.scoped !== undefined) base = this.scoped ? g.scoped : sp.stand
     else base = sp.stand * (1 - this.ads * (g.cls === 'shotgun' ? 0.15 : 0.35))
     base += sp.move * moveFrac
-    if (!P.grounded) base += sp.air
+    // Airborne only after a moment off the ground: steps, slopes and stair edges must not count.
+    if (!P.grounded && P.airTime > 0.1) base += sp.air * Math.min(1, (P.airTime - 0.1) / 0.15)
     if (P.crouch > 0.5 && P.grounded) base *= 0.8
     return base + this.bloom
   }
@@ -374,7 +376,7 @@ export class Arsenal {
     this.slideT = Math.max(0, this.slideT - dt)
     this.altSlideT = Math.max(0, this.altSlideT - dt)
     // Spray recoil recovers once the trigger is released (the crosshair settles back).
-    if (g && since > g.interval * 1.25) {
+    if (g && since > Math.min(g.interval * 1.25, 0.3)) {
       const k = Math.exp(-dt * (3.2 / g.recoil.recover))
       this.recoil.pitch *= k
       this.recoil.yaw *= k
@@ -467,19 +469,21 @@ export class Arsenal {
     this.cooldown = d.interval / this.mods.rate
     this.lastShot = this.world.time
     const g = this.gun
-    const forward = this.player.forward(tmp)
+    // Bullets leave exactly through the screen centre (camera = pitch/yaw + recoil + punch), with
+    // the spread of the moment the trigger broke (this shot's own bloom only affects the next).
+    const forward = this.aimForward(tmp)
+    const spread = this.spread
     const vm = this.vm(this.current)
     const useAlt = !!(g?.dual && vm.alt && this.altNext)
     this.altNext = !this.altNext
     ;(useAlt ? vm.alt!.muzzle : vm.muzzle).getWorldPosition(this.muzzleWorld)
     if (g) {
-      // Spray pattern: the bullets follow the full accumulated recoil, the camera only part of it.
+      // Spray pattern: this shot goes where the recoil so far points (the first shot lands on the
+      // crosshair), then the next step of the pattern kicks the aim.
       const [rp, ry] = recoilStep(g, this.sprayIndex++)
-      const adsK = (this.scoped ? 0.85 : 1 - this.ads * 0.15) * (this.player.crouch > 0.5 ? 0.85 : 1) * 0.8
+      const adsK = (this.scoped ? 0.85 : 1 - this.ads * 0.15) * (this.player.crouch > 0.5 ? 0.85 : 1) * 0.65
       this.recoil.pitch += rp * adsK
       this.recoil.yaw += ry * adsK
-      tmpE.set(this.player.pitch + this.recoil.pitch, this.player.yaw + this.recoil.yaw, 0, 'YXZ')
-      forward.set(0, 0, -1).applyEuler(tmpE)
     }
     const muzzle = this.muzzleWorld
     // Sound + muzzle.
@@ -552,7 +556,7 @@ export class Arsenal {
     }
     if (this.current === 'rocket') {
       if (vm.warhead) vm.warhead.visible = false
-      const dir = this.aimDirection(forward, this.spread)
+      const dir = this.aimDirection(forward, spread)
       const origin = tmp2.copy(eye).addScaledVector(dir, 0.6).add(new THREE.Vector3(0, -0.12, 0))
       this.world.fireRocket(0, origin.clone(), dir.clone(), this.player.collider.handle)
       this.world.fx.muzzle(muzzle.clone(), dir, [5, 3, 1.4, 1], 2.2)
@@ -574,7 +578,7 @@ export class Arsenal {
     let hitPoint: THREE.Vector3 | null = null
     const hitTargets = new Map<number, number>()
     for (let p = 0; p < pellets; p += 1) {
-      const dir = this.aimDirection(forward, this.spread)
+      const dir = this.aimDirection(forward, spread)
       const hit = this.world.raycast(eye, dir, d.range, this.player.collider.handle)
       const end = hit ? hit.point : tmp2.copy(eye).addScaledVector(dir, d.range)
       if (!shotty || p % 3 === 0) this.world.fx.tracer(muzzle, end, [5, 3.4, 1.6, 0.9], g?.cls === 'sniper' ? 520 : 340, g?.cls === 'sniper' ? 0.03 : shotty ? 0.018 : 0.022)
@@ -674,6 +678,13 @@ export class Arsenal {
     const v = new THREE.Vector3(1.6 + Math.random() * 0.8, 1.4 + Math.random() * 0.8, 0.4).multiplyScalar(power).applyQuaternion(q)
     v.add(this.player.velocity)
     this.world.fx.shell(pos, v)
+  }
+
+  /** Direction through the centre of the screen: view angles plus spray recoil and view punch. */
+  private aimForward(out: THREE.Vector3): THREE.Vector3 {
+    const P = this.player
+    tmpE.set(P.pitch + this.recoil.pitch + this.punch.pitch, P.yaw + this.recoil.yaw + this.punch.yaw, 0, 'YXZ')
+    return out.set(0, 0, -1).applyEuler(tmpE)
   }
 
   private aimDirection(forward: THREE.Vector3, spread: number): THREE.Vector3 {
